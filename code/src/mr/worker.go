@@ -90,9 +90,8 @@ func Run() string {
 		}
 		if reply.TaskReply.TaskType == "map" {
 			dealMap(reply.TaskReply)
-			return "Close" // todo
 		} else {
-			//dealReduce(reply.FilenameList, reply.TaskReply)
+			dealReduce(reply.FilenameList, reply.TaskReply)
 		}
 		return reply.Status
 	} else {
@@ -127,16 +126,17 @@ func dealMap(taskReply task) {
 			key = kva[i].Key
 			j++
 		}
-		values := []string{}
+
+		intermediate := []KeyValue{}
 		for k := i; k < j; k++ {
-			values = append(values, kva[k].Value)
+			intermediate = append(intermediate, kva[k])
 		}
 
 		filepath := ihash(key) % taskReply.NReduce
 		oname := "mr-out-" + taskReply.Filepath + "-" + strconv.Itoa(filepath)
 		ofile, _ := os.Create(oname)
 		enc := json.NewEncoder(ofile)
-		err := enc.Encode(&kva)
+		err := enc.Encode(&intermediate)
 		if err != nil {
 			log.Fatalf("cannot write into %v", oname)
 		}
