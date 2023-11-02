@@ -1,14 +1,12 @@
 package mr
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 )
 import "log"
 import "net/rpc"
@@ -49,9 +47,6 @@ func ihash(key string) int {
 
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
-	//gob.Register(ExampleArgs{})
-	//gob.Register(ExampleReply{})
 
 	fmt.Printf("run Worker\n")
 
@@ -114,73 +109,108 @@ func dealMap(taskReply task) {
 	file.Close()
 	kva := mrMap(filename, string(content))
 	fmt.Printf(" run mrMap\n")
-	sort.Sort(ByKey(kva))
-	// write
+	// todo sort.Sort(ByKey(kva))
 
+	// bucket
+	bucket := map[int][]KeyValue{}
 	i := 0
-	fmt.Printf(" writing..., len(kva):%d \n", len(kva))
 	for i < len(kva) {
-		j := i + 1
-		var key string
-		for j < len(kva) && kva[j].Key == kva[i].Key {
-			key = kva[i].Key
-			j++
-		}
-
-		intermediate := []KeyValue{}
-		for k := i; k < j; k++ {
-			intermediate = append(intermediate, kva[k])
-		}
-
-		filepath := ihash(key) % taskReply.NReduce
-		oname := "mr-out-" + taskReply.Filepath + "-" + strconv.Itoa(filepath)
-		ofile, _ := os.Create(oname)
-		enc := json.NewEncoder(ofile)
-		err := enc.Encode(&intermediate)
-		if err != nil {
-			log.Fatalf("cannot write into %v", oname)
-		}
-		//os.Rename(ofile.Name(), oname)
-		//fmt.Fprintf(ofile, "%+v \n", kva[i].Key, values)
-		i = j
-		ofile.Close()
+		key := kva[i].Key
+		bucketID := ihash(key) % taskReply.NReduce
+		bucket[bucketID] = append(bucket[bucketID], kva[i])
+		i += 1
 	}
 
-	// call back
+	// write
+	bucketID := 0
+	for bucketID < len(bucket) {
+		oname := "mr-" + taskReply.Filepath + "-" + strconv.Itoa(bucketID)
+		ofile, _ := os.Create(oname)
+		enc := json.NewEncoder(ofile)
 
+		for _, kva := range bucket[bucketID] {
+			err := enc.Encode(&kva)
+			if err != nil {
+				log.Fatalf("cannot write into %v", oname)
+			}
+		}
+		ofile.Close()
+		bucketID += 1
+	}
+
+	fmt.Printf(" writing..., len(kva):%d \n", len(kva))
+
+	// call back
+	SendFinish(taskReply.Id)
+}
+
+func SendFinish(taskID int) {
+	args := ExampleArgs{}
+	args.Status = "Finish"
+	args.Port = "1"
+	args.TaskID = taskID
+
+	// declare a reply structure.
+	reply := ExampleReply{}
+	reply.Close = false
+	ok := call("Coordinator.Allocate", &args, &reply)
+	for !ok {
+		call("Coordinator.Allocate", &args, &reply)
+	}
 }
 
 func dealReduce(filenameList []string, taskReply task) {
 	// shuffle
 	// all Filename:
 	fmt.Printf("task %d, dealing reduce %+v \n", taskReply.Id, taskReply)
-	key := ""
-	values := []string{}
+	intermediate := []KeyValue{}
 
 	for i := 0; i < len(filenameList); i++ {
 		filename := filenameList[i]
-		oname := filename + taskReply.Filepath
-		ifile, _ := os.Open(oname)
+		iname := "mr-" + filename + "-" + taskReply.Filepath
+		ifile, err := os.Open(iname)
+		if err != nil {
+			log.Fatalf("cannot open file: %s, %v", iname, ifile)
+		}
 		// read, for each key
 		defer ifile.Close()
 
-		scanner := bufio.NewScanner(ifile)
-
-		// Read and process each line from the file.
-		for scanner.Scan() {
-			line := scanner.Text()
-			parts := strings.Split(line, " ")
-			if len(parts) == 2 {
-				key = parts[0]
-				values = append(values, parts[1])
+		decoder := json.NewDecoder(ifile)
+		for {
+			var kv KeyValue
+			if err := decoder.Decode(&kv); err != nil {
+				break
 			}
+			intermediate = append(intermediate, kv)
 		}
 	}
 
-	output := mrReduce(key, values)
-	oname := "mr-out-" + taskReply.Filepath
-	ofile, _ := os.Create(oname)
-	fmt.Fprintf(ofile, "%v %v\n", key, output)
+	sort.Sort(ByKey(intermediate))
+	oname := "mr-out-" + strconv.Itoa(taskReply.Id-len(filenameList))
+
+	// to stop from this reduce work fail, use temp file
+	ofile, _ := ioutil.TempFile("", oname+"*")
+	defer ofile.Close()
+
+	// put all same key together to map
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := mrReduce(intermediate[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		i = j
+	}
+	os.Rename(ofile.Name(), oname)
+
+	// call back
+	SendFinish(taskReply.Id)
 }
 
 //

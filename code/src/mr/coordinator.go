@@ -37,7 +37,12 @@ type Coordinator struct {
 
 func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 
-	if args.Status != "Ready" {
+	if args.Status == "Wrong" {
+		return nil
+	}
+
+	if args.Status == "Finish" {
+		c.taskList[args.TaskID].WorkerStatus = "Done"
 		return nil
 	}
 
@@ -124,7 +129,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		mapTask := task{Id: i, Filename: filename, TaskType: "map", Filepath: strconv.Itoa(i), NReduce: nReduce}
 		c.taskList = append(c.taskList, mapTask)
 		c.mapNum = i + 1
-		c.filenameList = append(c.filenameList, filename)
+		c.filenameList = append(c.filenameList, strconv.Itoa(i))
 	}
 
 	for i := 0; i < nReduce; i++ {

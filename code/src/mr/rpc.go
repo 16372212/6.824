@@ -17,6 +17,7 @@ import "strconv"
 type ExampleArgs struct {
 	Status string
 	Port   string
+	TaskID int
 }
 
 type ExampleReply struct {
