@@ -48,14 +48,12 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	fmt.Printf("run Worker\n")
-
 	// Your worker implementation here.
 	mrMap = mapf
 	mrReduce = reducef
 	for {
 		status := Run()
-		if status == "Close" || status == "Wrong" {
+		if status == "Close" {
 			break
 		}
 	}
@@ -96,19 +94,25 @@ func Run() string {
 }
 
 func dealMap(taskReply task) {
-	fmt.Printf("task %d, dealing map %+v \n", taskReply.Id, taskReply)
 	filename := taskReply.Filename
 	file, err := os.Open(filename)
+
 	if err != nil {
-		log.Fatalf("cannot open %+v", filename)
+		SendBack(taskReply.Id, "Wrong")
+		log.Println("cannot open %+v", filename)
+		return
+		//log.Fatalf("cannot open %+v", filename)
 	}
+
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
+		SendBack(taskReply.Id, "Wrong")
+		//log.Println("cannot read %v", filename)
+		//return
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
 	kva := mrMap(filename, string(content))
-	fmt.Printf(" run mrMap\n")
 	// todo sort.Sort(ByKey(kva))
 
 	// bucket
@@ -122,8 +126,7 @@ func dealMap(taskReply task) {
 	}
 
 	// write
-	bucketID := 0
-	for bucketID < len(bucket) {
+	for bucketID, _ := range bucket {
 		oname := "mr-" + taskReply.Filepath + "-" + strconv.Itoa(bucketID)
 		ofile, _ := os.Create(oname)
 		enc := json.NewEncoder(ofile)
@@ -131,22 +134,22 @@ func dealMap(taskReply task) {
 		for _, kva := range bucket[bucketID] {
 			err := enc.Encode(&kva)
 			if err != nil {
+				SendBack(taskReply.Id, "Wrong")
+				//log.Println("cannot write into %v", oname)
 				log.Fatalf("cannot write into %v", oname)
 			}
 		}
-		ofile.Close()
+		defer ofile.Close()
 		bucketID += 1
 	}
 
-	fmt.Printf(" writing..., len(kva):%d \n", len(kva))
-
 	// call back
-	SendFinish(taskReply.Id)
+	SendBack(taskReply.Id, "Finish")
 }
 
-func SendFinish(taskID int) {
+func SendBack(taskID int, status string) {
 	args := ExampleArgs{}
-	args.Status = "Finish"
+	args.Status = status
 	args.Port = "1"
 	args.TaskID = taskID
 
@@ -162,7 +165,6 @@ func SendFinish(taskID int) {
 func dealReduce(filenameList []string, taskReply task) {
 	// shuffle
 	// all Filename:
-	fmt.Printf("task %d, dealing reduce %+v \n", taskReply.Id, taskReply)
 	intermediate := []KeyValue{}
 
 	for i := 0; i < len(filenameList); i++ {
@@ -170,19 +172,27 @@ func dealReduce(filenameList []string, taskReply task) {
 		iname := "mr-" + filename + "-" + taskReply.Filepath
 		ifile, err := os.Open(iname)
 		if err != nil {
-			log.Fatalf("cannot open file: %s, %v", iname, ifile)
+			// 说明可能这个文件就不存在呢
+			if os.IsExist(err) {
+				SendBack(taskReply.Id, "Wrong")
+				//log.Println("cannot open file: %s, %v", iname, ifile)
+				//return
+				log.Fatalf("cannot open file: %s, %v", iname, ifile)
+			} else {
+				continue
+			}
 		}
 		// read, for each key
-		defer ifile.Close()
-
 		decoder := json.NewDecoder(ifile)
 		for {
 			var kv KeyValue
-			if err := decoder.Decode(&kv); err != nil {
+			err = decoder.Decode(&kv)
+			if err != nil {
 				break
 			}
 			intermediate = append(intermediate, kv)
 		}
+		ifile.Close()
 	}
 
 	sort.Sort(ByKey(intermediate))
@@ -210,7 +220,7 @@ func dealReduce(filenameList []string, taskReply task) {
 	os.Rename(ofile.Name(), oname)
 
 	// call back
-	SendFinish(taskReply.Id)
+	SendBack(taskReply.Id, "Finish")
 }
 
 //
@@ -224,6 +234,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
+		//fmt.Println("dialing:", err)
+		//return false
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()

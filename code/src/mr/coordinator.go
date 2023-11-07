@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 )
 import "net/rpc"
 import "net/http"
@@ -25,6 +26,7 @@ type Coordinator struct {
 	taskList     []task
 	mapNum       int
 	filenameList []string
+	lock         sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -37,12 +39,17 @@ type Coordinator struct {
 
 func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 
-	if args.Status == "Wrong" {
+	if args.Status == "Finish" {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		c.taskList[args.TaskID].WorkerStatus = "Done"
 		return nil
 	}
 
-	if args.Status == "Finish" {
-		c.taskList[args.TaskID].WorkerStatus = "Done"
+	if args.Status == "Wrong" {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		c.taskList[args.TaskID].WorkerPort = ""
 		return nil
 	}
 
@@ -51,8 +58,9 @@ func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 		return nil
 	}
 
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	for i := 0; i < len(c.taskList); i++ {
-		// todo 目前不考虑容错
 		if c.taskList[i].WorkerPort == "" {
 			c.taskList[i].WorkerPort = args.Port
 			c.taskList[i].WorkerStatus = "Run"
@@ -62,11 +70,13 @@ func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 			return nil
 		}
 	}
-	reply.Close = true
+
 	return nil
 }
 
 func (c *Coordinator) isNoTaskLeft() bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	for i := 0; i < len(c.taskList); i++ {
 		if c.taskList[i].WorkerPort == "" || c.taskList[i].WorkerStatus != "Done" {
 			return false
@@ -102,11 +112,11 @@ func (c *Coordinator) Done() bool {
 	for i := range c.taskList {
 		taskTemp := c.taskList[i]
 		if taskTemp.WorkerStatus != "Done" {
+			fmt.Printf("task %d not done", taskTemp.Id)
 			return false
 		}
 	}
 
-	//writeFilesToOne(c.FilRenameList)
 	return true
 }
 
@@ -136,8 +146,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		reduceTask := task{Id: i + c.mapNum, TaskType: "reduce", Filepath: strconv.Itoa(i), NReduce: nReduce}
 		c.taskList = append(c.taskList, reduceTask)
 	}
-	fmt.Println(">>>>>begin:")
 
+	fmt.Println("begin>>>>>>>")
 	c.server()
 	return &c
 }
