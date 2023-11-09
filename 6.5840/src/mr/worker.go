@@ -3,14 +3,14 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
+	"log"
+	"net/rpc"
 	"os"
 	"sort"
 	"strconv"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 //
 // Map functions return a slice of KeyValue.
@@ -77,6 +77,7 @@ func Run() string {
 	reply.Close = false
 	ok := call("Coordinator.Allocate", &args, &reply)
 
+	fmt.Printf("---get task %d \n", reply.TaskReply.Id)
 	if ok {
 		if reply.Close {
 			return "Close"
@@ -99,7 +100,7 @@ func dealMap(taskReply task) {
 
 	if err != nil {
 		SendBack(taskReply.Id, "Wrong")
-		log.Println("cannot open %+v", filename)
+		log.Println("map: cannot open %+v", filename)
 		return
 		//log.Fatalf("cannot open %+v", filename)
 	}
@@ -177,7 +178,7 @@ func dealReduce(filenameList []string, taskReply task) {
 				SendBack(taskReply.Id, "Wrong")
 				//log.Println("cannot open file: %s, %v", iname, ifile)
 				//return
-				log.Fatalf("cannot open file: %s, %v", iname, ifile)
+				log.Fatalf("reduce: cannot open file: %s, %v", iname, ifile)
 			} else {
 				continue
 			}

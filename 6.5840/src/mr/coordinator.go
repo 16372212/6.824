@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"net/rpc"
 	"os"
 	"strconv"
 	"sync"
 )
-import "net/rpc"
-import "net/http"
 
 type task struct {
 	Id           int
@@ -39,6 +39,7 @@ type Coordinator struct {
 
 func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 
+	fmt.Printf(" task:%d, status:%s\n", args.TaskID, args.Status)
 	if args.Status == "Finish" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -112,7 +113,6 @@ func (c *Coordinator) Done() bool {
 	for i := range c.taskList {
 		taskTemp := c.taskList[i]
 		if taskTemp.WorkerStatus != "Done" {
-			fmt.Printf("task %d not done", taskTemp.Id)
 			return false
 		}
 	}

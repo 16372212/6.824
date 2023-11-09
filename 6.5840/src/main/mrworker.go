@@ -10,12 +10,10 @@ package main
 // Please do not change this file.
 //
 
-import (
-	"6.5840/mr"
-	"fmt"
-)
+import "6.5840/mr"
 import "plugin"
 import "os"
+import "fmt"
 import "log"
 
 func main() {
