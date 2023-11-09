@@ -39,7 +39,6 @@ type Coordinator struct {
 
 func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 
-	fmt.Printf(" task:%d, status:%s\n", args.TaskID, args.Status)
 	if args.Status == "Finish" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -60,7 +59,6 @@ func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 	}
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
 	for i := 0; i < len(c.taskList); i++ {
 		if c.taskList[i].WorkerPort == "" {
 			c.taskList[i].WorkerPort = args.Port
@@ -68,16 +66,16 @@ func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 			reply.Status = "Run"
 			reply.FilenameList = c.filenameList
 			reply.TaskReply = c.taskList[i]
+			c.lock.Unlock()
 			return nil
 		}
 	}
+	c.lock.Unlock()
 
 	return nil
 }
 
 func (c *Coordinator) isNoTaskLeft() bool {
-	c.lock.Lock()
-	defer c.lock.Unlock()
 	for i := 0; i < len(c.taskList); i++ {
 		if c.taskList[i].WorkerPort == "" || c.taskList[i].WorkerStatus != "Done" {
 			return false

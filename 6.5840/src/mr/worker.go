@@ -71,20 +71,21 @@ func Run() string {
 	args := ExampleArgs{}
 	args.Status = "Ready"
 	args.Port = "1"
+	args.TaskID = -1
 
 	// declare a reply structure.
 	reply := ExampleReply{}
 	reply.Close = false
 	ok := call("Coordinator.Allocate", &args, &reply)
 
-	fmt.Printf("---get task %d \n", reply.TaskReply.Id)
+	//fmt.Printf("---worker: get task %d \n", reply.TaskReply.Id)
 	if ok {
 		if reply.Close {
 			return "Close"
 		}
 		if reply.TaskReply.TaskType == "map" {
 			dealMap(reply.TaskReply)
-		} else {
+		} else if reply.TaskReply.TaskType == "reduce" {
 			dealReduce(reply.FilenameList, reply.TaskReply)
 		}
 		return reply.Status
