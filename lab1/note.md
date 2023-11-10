@@ -1,3 +1,48 @@
+# some ideas
+
+## Task Synchronous: 
+all map task should be earlier than reduce task! 
+
+some map task may wait seconds, so should first all map tasks done before reduce.
+
+## Lock: 
+
+workers run parallel, should add mutex to filelist when 
+
+## Error Return: 
+
+workers may run some error, such as `rpc sock connect` and `can not open files`. When these errors happend, should return `Error` to master, other than just stop itself.
+
+## Heartbeat: 
+
+master should ask workers whether they are alive.
+
+Implementation method:
+
+1. Set a new scheduled task and ask every 2 minutes.
+2. Every time a new worker requests a new task, add a judgment when rotating all tasks to assign tasks to the worker. If a task status is not Finish and times out, the task fails
+3. Write in the `Done()` method and continuously rotate to ensure that all tasks are completed. And take the opportunity to determine if there is a task timeout.
+
+Performance comparison: 1>2>3
+
+Judging by frequency. The execution frequency of 3 is too high, constantly executing and discussing the sequence.
+
+# status of task and worker
+
+worker: 
+
+- Finish: worker finish task X
+- Ready: worker ask for a new task
+- Wrong: worker meet some problems
+- Close: worker will be closed when master ask worker to close
+
+
+task:
+
+- Run: some worker is running on this task
+- Done: this task is finished
+- (empty string): task not be allocated yet 
+
 # Paper main idea
 
 ```

@@ -78,8 +78,8 @@ func Run() string {
 	reply.Close = false
 	ok := call("Coordinator.Allocate", &args, &reply)
 
-	//fmt.Printf("---worker: get task %d \n", reply.TaskReply.Id)
 	if ok {
+		//fmt.Printf("---worker: get task %d \n", reply.TaskReply.Id)
 		if reply.Close {
 			return "Close"
 		}

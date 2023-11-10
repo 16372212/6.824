@@ -9,24 +9,26 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 )
 
 type task struct {
 	Id           int
 	Filename     string
-	WorkerPort   string
 	WorkerStatus string
 	TaskType     string
 	Filepath     string
 	NReduce      int
+	TimeStamp    time.Time
 }
 
 type Coordinator struct {
 	// Your definitions here.
-	taskList     []task
-	mapNum       int
-	filenameList []string
-	lock         sync.Mutex
+	mapTaskList    []task
+	reduceTaskList []task
+	mapNum         int
+	filenameList   []string
+	lock           sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -39,49 +41,95 @@ type Coordinator struct {
 
 func (c *Coordinator) Allocate(args *ExampleArgs, reply *ExampleReply) error {
 
+	//if args.TaskID != -1 {
+	//	fmt.Printf(" master receive task %d, status: %s \n", args.TaskID, args.Status)
+	//}
+
 	if args.Status == "Finish" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
-		c.taskList[args.TaskID].WorkerStatus = "Done"
+		if args.TaskID >= len(c.mapTaskList) {
+			c.reduceTaskList[args.TaskID-len(c.mapTaskList)].WorkerStatus = "Done"
+		} else {
+			c.mapTaskList[args.TaskID].WorkerStatus = "Done"
+		}
+
 		return nil
 	}
 
 	if args.Status == "Wrong" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
-		c.taskList[args.TaskID].WorkerPort = ""
+
+		if args.TaskID >= len(c.mapTaskList) {
+			c.reduceTaskList[args.TaskID-len(c.mapTaskList)].WorkerStatus = ""
+		} else {
+			c.mapTaskList[args.TaskID].WorkerStatus = ""
+		}
 		return nil
 	}
 
-	if c.isNoTaskLeft() {
+	if c.isNoTaskLeft(append(c.mapTaskList, c.reduceTaskList...)) {
 		reply.Close = true
 		return nil
 	}
 
+	// should first map then reduce!!!
 	c.lock.Lock()
-	for i := 0; i < len(c.taskList); i++ {
-		if c.taskList[i].WorkerPort == "" {
-			c.taskList[i].WorkerPort = args.Port
-			c.taskList[i].WorkerStatus = "Run"
+	for i := 0; i < len(c.mapTaskList); i++ {
+		if c.isTaskShouldBeAllocate(&c.mapTaskList[i]) {
+			c.mapTaskList[i].WorkerStatus = "Run"
+			c.mapTaskList[i].TimeStamp = time.Now()
 			reply.Status = "Run"
 			reply.FilenameList = c.filenameList
-			reply.TaskReply = c.taskList[i]
+			reply.TaskReply = c.mapTaskList[i]
 			c.lock.Unlock()
 			return nil
 		}
 	}
+
+	if c.isNoTaskLeft(c.mapTaskList) {
+		for i := 0; i < len(c.reduceTaskList); i++ {
+			if c.isTaskShouldBeAllocate(&c.reduceTaskList[i]) {
+				c.reduceTaskList[i].WorkerStatus = "Run"
+				c.reduceTaskList[i].TimeStamp = time.Now()
+				reply.Status = "Run"
+				reply.FilenameList = c.filenameList
+				reply.TaskReply = c.reduceTaskList[i]
+				c.lock.Unlock()
+				return nil
+			}
+		}
+	}
+
 	c.lock.Unlock()
 
 	return nil
 }
 
-func (c *Coordinator) isNoTaskLeft() bool {
-	for i := 0; i < len(c.taskList); i++ {
-		if c.taskList[i].WorkerPort == "" || c.taskList[i].WorkerStatus != "Done" {
+func (c *Coordinator) isNoTaskLeft(list []task) bool {
+	for i := 0; i < len(list); i++ {
+		if list[i].WorkerStatus != "Done" {
 			return false
 		}
 	}
 	return true
+}
+
+func (c *Coordinator) isTaskShouldBeAllocate(t *task) bool {
+	if t.WorkerStatus == "" {
+		return true
+	}
+
+	// heartbeat
+	endTime := time.Now()
+	timeDiff := endTime.Sub(t.TimeStamp).Seconds()
+	if t.WorkerStatus != "Done" && timeDiff > 10 {
+		t.WorkerStatus = ""
+		return true
+	}
+
+	return false
 }
 
 //
@@ -106,15 +154,17 @@ func (c *Coordinator) server() {
 //
 
 func (c *Coordinator) Done() bool {
-	// Your code here.
-	// worker状态都是停止
-	for i := range c.taskList {
-		taskTemp := c.taskList[i]
-		if taskTemp.WorkerStatus != "Done" {
+	for i := range c.mapTaskList {
+		if c.mapTaskList[i].WorkerStatus != "Done" {
 			return false
 		}
 	}
 
+	for i := range c.reduceTaskList {
+		if c.reduceTaskList[i].WorkerStatus != "Done" {
+			return false
+		}
+	}
 	return true
 }
 
@@ -130,19 +180,20 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	// 分发files任务
 	//c.workerMap = make(map[string]string)
-	c.taskList = []task{}
+	c.mapTaskList = []task{}
+	c.reduceTaskList = []task{}
 
 	for i := 0; i < len(files); i++ {
 		filename := files[i]
 		mapTask := task{Id: i, Filename: filename, TaskType: "map", Filepath: strconv.Itoa(i), NReduce: nReduce}
-		c.taskList = append(c.taskList, mapTask)
+		c.mapTaskList = append(c.mapTaskList, mapTask)
 		c.mapNum = i + 1
 		c.filenameList = append(c.filenameList, strconv.Itoa(i))
 	}
 
 	for i := 0; i < nReduce; i++ {
 		reduceTask := task{Id: i + c.mapNum, TaskType: "reduce", Filepath: strconv.Itoa(i), NReduce: nReduce}
-		c.taskList = append(c.taskList, reduceTask)
+		c.reduceTaskList = append(c.reduceTaskList, reduceTask)
 	}
 
 	fmt.Println("begin>>>>>>>")
