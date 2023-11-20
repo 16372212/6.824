@@ -156,6 +156,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.Term = rf.currentTerm
 
+	// todo 一个term下, vote过就不需要继续vote ??
+	//if rf.votedFor != -1 {
+	//	return
+	//}
+
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		return
@@ -236,12 +241,13 @@ func (rf *Raft) beginElection() {
 	}
 
 	// 冲突了
-	if voteNum <= len(rf.peers)/2 {
+	if voteNum < len(rf.peers)/2 {
 		return
 	}
 
 	rf.currentLeader = rf.me
 	rf.state = 2
+	DPrintf("--------%d is leader------", rf.me)
 
 	// broadcast to all other endClients
 	appendArgs := AppendEntriesArgs{}
@@ -253,8 +259,10 @@ func (rf *Raft) beginElection() {
 
 	appendReply := AppendEntriesReply{}
 	for peer := range rf.peers {
-		// 是否需要判断ture false? 如果很多都是false怎么办，需要重新发送吗？好像不需要....
-		rf.sendAppendEntries(peer, &appendArgs, &appendReply)
+		if peer != rf.me {
+			// 是否需要判断ture false? 如果很多都是false怎么办，需要重新发送吗？好像不需要....
+			rf.sendAppendEntries(peer, &appendArgs, &appendReply)
+		}
 	}
 }
 
@@ -276,8 +284,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 
 	if args.Term >= rf.currentTerm {
-		rf.currentTerm = args.LeaderId
-		rf.state = 2
+		rf.currentTerm = args.Term
+		rf.currentLeader = args.LeaderId
+		rf.votedFor = -1
+		rf.state = 0
 		reply.Success = true
 		return
 	}
@@ -357,20 +367,20 @@ func (rf *Raft) ticker() {
 			continue
 		}
 
-		if rf.votedFor == -1 {
+		if rf.currentLeader == -1 {
 			rf.state = 1
+			rf.currentTerm += 1
 			go rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
 
 		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
+		rf.votedFor = -1
+		rf.currentLeader = -1
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-		// 周期结束，term加一
-		rf.currentTerm += 1
-		rf.votedFor = -1
 	}
 }
 
