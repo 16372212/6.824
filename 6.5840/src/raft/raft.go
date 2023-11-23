@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	//	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -152,24 +151,26 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	DPrintf("           raft [%d], term %d begin election. to (id:%d, term:%d)", args.CandidateId, args.Term, rf.me, rf.currentTerm)
-
+	// todo term会落后
+	DPrintf("           raft [%d], term %d send requestVote to id:[%d] term:%d", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
-	// todo 一个term下, vote过就不需要继续vote ??
-	//if rf.votedFor != -1 {
-	//	return
-	//}
-
-	if args.Term < rf.currentTerm {
+	if rf.votedFor != -1 || rf.currentLeader != -1 {
+		DPrintf("     raft [%d] term:%d already vote or leader for %d, leader %d", rf.me, rf.currentTerm, rf.votedFor, rf.currentLeader)
 		reply.VoteGranted = false
 		return
 	}
 
-	if (rf.votedFor <= 0 || rf.votedFor == args.CandidateId) && args.LastLogIndex >= len(rf.log)-1 {
+	if args.Term < rf.currentTerm {
+		DPrintf("  raft [%d] term:%d [term] wrong", rf.me, rf.currentTerm)
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.LastLogIndex >= len(rf.log)-1 {
 		DPrintf("raft 【%d】with term [%d] vote true for raft【%d】term [%d], ", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		reply.VoteGranted = true
-		rf.state = 0
+		rf.votedFor = args.CandidateId
 		return
 	}
 
@@ -220,19 +221,29 @@ func (rf *Raft) beginElection() {
 	args.CandidateId = rf.me
 	args.LastLogIndex = len(rf.log) - 1
 	reply := RequestVoteReply{}
+	reply.VoteGranted = false
 
 	// already get its own vote
-	voteNum := 1
-	rf.mu.Lock()
+	posVote := 1
+	negVote := 0
+	//rf.mu.Lock()
 	for peer := range rf.peers {
 		// do not need to send to candidate itself
-		if peer != rf.me {
-			if rf.sendRequestVote(peer, &args, &reply) && reply.VoteGranted {
-				voteNum += 1
+		if peer != rf.me && rf.sendRequestVote(peer, &args, &reply) {
+			if reply.VoteGranted {
+				posVote += 1
+			} else {
+				negVote += 1
 			}
 		}
 	}
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
+
+	// 冲突了
+	DPrintf("  %d vote result: %d : %d", rf.me, posVote, negVote)
+	if posVote <= negVote {
+		return
+	}
 
 	// 收到leader的心跳
 	if rf.currentLeader != -1 {
@@ -240,15 +251,14 @@ func (rf *Raft) beginElection() {
 		return
 	}
 
-	// 冲突了
-	if voteNum < len(rf.peers)/2 {
-		return
-	}
-
 	rf.currentLeader = rf.me
 	rf.state = 2
-	DPrintf("--------%d is leader------", rf.me)
+	DPrintf("*********%d is leader, ticket: (%d, %d)*********", rf.me, posVote, negVote)
 
+	rf.beginAppendEntries()
+}
+
+func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
 	appendArgs := AppendEntriesArgs{}
 	appendArgs.Term = rf.currentTerm
@@ -286,28 +296,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.currentLeader = args.LeaderId
-		rf.votedFor = -1
 		rf.state = 0
 		reply.Success = true
+		DPrintf("                       [%d]'s leader is [%d]", rf.me, rf.currentLeader)
 		return
 	}
 
 	reply.Success = false
 	return
 
-	//reply.Term = rf.currentTerm
-	//
-	//if args.Term >= rf.currentTerm {
-	//	rf.currentTerm = args.Term
-	//	rf.currentLeader = args.LeaderId
-	//	rf.state = 0
-	//	rf.votedFor = -1
-	//	reply.Success = true
-	//	return
-	//}
-	//
-	//reply.Success = false
-	//return
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -356,32 +353,36 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
+func (rf *Raft) tickerAsCandidate() {
 	for rf.killed() == false {
 
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-		// if is leader, just continue!
 		if rf.state == 2 {
 			continue
 		}
 
-		if rf.currentLeader == -1 {
-			rf.state = 1
-			rf.currentTerm += 1
-			go rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
-
-		}
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
 		rf.votedFor = -1
 		rf.currentLeader = -1
+		//DPrintf("-------------------------%d time out, term:%d---------------------", rf.me, rf.currentTerm)
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
+		if rf.currentLeader == -1 {
+			rf.state = 1
+			rf.currentTerm += 1
+			DPrintf("------------------------- %d begin election :%d---------------------", rf.me, rf.currentTerm)
+			go rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
+		} else {
+			DPrintf("----%d have leader :%d", rf.me, rf.currentLeader)
+		}
 	}
+}
+
+func (rf *Raft) tickerAsLeader() {
+	if rf.me == rf.currentLeader {
+		rf.beginAppendEntries()
+	}
+	ms := 10 + (rand.Int63() % 20)
+	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -404,12 +405,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentLeader = -1
 	rf.state = 0
 	rf.currentTerm = 0
+	rf.votedFor = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.tickerAsCandidate()
+	go rf.tickerAsLeader()
 
 	return rf
 }
