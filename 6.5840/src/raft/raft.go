@@ -211,32 +211,44 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) beginElection() {
 
-	rf.state = 1
+	rf.currentTerm += 1
 	rf.votedFor = rf.me
 
 	//DPrintf("           raft [%d], term %d begin election", rf.me, rf.currentTerm)
-	args := RequestVoteArgs{}
+	args := RequestVoteArgs{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log) - 1,
+	}
+
 	// args.LastLogTerm todo 这里怎么设置呢
-	args.Term = rf.currentTerm
-	args.CandidateId = rf.me
-	args.LastLogIndex = len(rf.log) - 1
-	reply := RequestVoteReply{}
-	reply.VoteGranted = false
+	reply := RequestVoteReply{
+		VoteGranted: false,
+	}
 
 	// already get its own vote
 	posVote := 1
 	negVote := 0
 	//rf.mu.Lock()
-	for peer := range rf.peers {
+	for peerIndex := range rf.peers {
 		// do not need to send to candidate itself
-		if peer != rf.me && rf.sendRequestVote(peer, &args, &reply) {
-			if reply.VoteGranted {
-				posVote += 1
-			} else {
-				negVote += 1
-			}
+		if peerIndex == rf.me {
+			continue
 		}
+
+		go func(peerIndex int) {
+			if rf.sendRequestVote(peerIndex, &args, &reply) {
+				if reply.VoteGranted {
+					posVote += 1
+				} else {
+					negVote += 1
+				}
+			}
+		}(peerIndex)
 	}
+
+	// 怎么对上面的go func中对posVote进行改变，将每个循环的posVote都相加呢？
+
 	//rf.mu.Unlock()
 
 	// 冲突了
@@ -353,36 +365,46 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) tickerAsFollower() {
+	// 判断是否超时，转换状态
+}
+
 func (rf *Raft) tickerAsCandidate() {
-	for rf.killed() == false {
-
-		if rf.state == 2 {
-			continue
-		}
-
+	for {
 		rf.votedFor = -1
 		rf.currentLeader = -1
 		//DPrintf("-------------------------%d time out, term:%d---------------------", rf.me, rf.currentTerm)
-		ms := 50 + (rand.Int63() % 300)
+		ms := 200 + (rand.Int63() % 400)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-		if rf.currentLeader == -1 {
-			rf.state = 1
-			rf.currentTerm += 1
-			DPrintf("------------------------- %d begin election :%d---------------------", rf.me, rf.currentTerm)
-			go rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
-		} else {
-			DPrintf("----%d have leader :%d", rf.me, rf.currentLeader)
+		if rf.state != 2 {
+			break
 		}
+		DPrintf("------------------------- %d begin election :%d---------------------", rf.me, rf.currentTerm)
+		rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
 	}
 }
 
 func (rf *Raft) tickerAsLeader() {
-	if rf.me == rf.currentLeader {
-		rf.beginAppendEntries()
-	}
-	ms := 10 + (rand.Int63() % 20)
+	rf.beginAppendEntries()
+	ms := 100 + (rand.Int63() % 100)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+func (rf *Raft) mainLoop() {
+	for rf.killed() == false {
+		switch rf.state {
+		case 0:
+			rf.tickerAsFollower()
+			break
+		case 1:
+			rf.tickerAsCandidate()
+			break
+		case 2:
+			rf.tickerAsLeader()
+			break
+		}
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -403,7 +425,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentLeader = -1
-	rf.state = 0
+	rf.state = 1
 	rf.currentTerm = 0
 	rf.votedFor = -1
 
@@ -411,8 +433,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.tickerAsCandidate()
-	go rf.tickerAsLeader()
+	go rf.mainLoop()
 
 	return rf
 }
