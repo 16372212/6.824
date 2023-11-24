@@ -79,7 +79,6 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	// Your code here (2A).
-
 	return rf.currentTerm, rf.currentLeader == rf.me
 }
 
@@ -155,20 +154,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("           raft [%d], term %d send requestVote to id:[%d] term:%d", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
-	if rf.votedFor != -1 || rf.currentLeader != -1 {
-		DPrintf("     raft [%d] term:%d already vote or leader for %d, leader %d", rf.me, rf.currentTerm, rf.votedFor, rf.currentLeader)
-		reply.VoteGranted = false
-		return
-	}
-
 	if args.Term < rf.currentTerm {
 		DPrintf("  raft [%d] term:%d [term] wrong", rf.me, rf.currentTerm)
 		reply.VoteGranted = false
 		return
 	}
 
+	if rf.votedFor != -1 {
+		DPrintf("raft 【%d】 term:[%d](status: %d) deny for raft[%d] term [%d], already vote or leader for %d, leader %d", rf.me, rf.currentTerm, rf.state, args.CandidateId, args.Term, rf.votedFor, rf.currentLeader)
+		reply.VoteGranted = false
+		return
+	}
+
 	if args.LastLogIndex >= len(rf.log)-1 {
-		DPrintf("raft 【%d】with term [%d] vote true for raft【%d】term [%d], ", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+		DPrintf("raft 【%d】 term [%d] vote for raft【%d】term [%d], ", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		return
@@ -209,82 +208,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-func (rf *Raft) beginElection() {
-
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
-
-	//DPrintf("           raft [%d], term %d begin election", rf.me, rf.currentTerm)
-	args := RequestVoteArgs{
-		Term:         rf.currentTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log) - 1,
-	}
-
-	// args.LastLogTerm todo 这里怎么设置呢
-	reply := RequestVoteReply{
-		VoteGranted: false,
-	}
-
-	// already get its own vote
-	posVote := 1
-	negVote := 0
-	//rf.mu.Lock()
-	for peerIndex := range rf.peers {
-		// do not need to send to candidate itself
-		if peerIndex == rf.me {
-			continue
-		}
-
-		go func(peerIndex int) {
-			if rf.sendRequestVote(peerIndex, &args, &reply) {
-				if reply.VoteGranted {
-					posVote += 1
-				} else {
-					negVote += 1
-				}
-			}
-		}(peerIndex)
-	}
-
-	// 怎么对上面的go func中对posVote进行改变，将每个循环的posVote都相加呢？
-
-	//rf.mu.Unlock()
-
-	// 冲突了
-	DPrintf("  %d vote result: %d : %d", rf.me, posVote, negVote)
-	if posVote <= negVote {
-		return
-	}
-
-	// 收到leader的心跳
-	if rf.currentLeader != -1 {
-		rf.state = 0
-		return
-	}
-
-	rf.currentLeader = rf.me
-	rf.state = 2
-	DPrintf("*********%d is leader, ticket: (%d, %d)*********", rf.me, posVote, negVote)
-
-	rf.beginAppendEntries()
-}
-
 func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
-	appendArgs := AppendEntriesArgs{}
-	appendArgs.Term = rf.currentTerm
-	appendArgs.LeaderId = rf.me
-	// appendArgs.PrevLogIndex = rf.log
-	// appendArgs.LeaderCommit
-	appendArgs.PrevLogTerm = rf.currentTerm - 1
+	appendArgs := AppendEntriesArgs{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+		// PrevLogIndex: rf.log,
+		// LeaderCommit
+		PrevLogTerm: rf.currentTerm - 1,
+	}
 
 	appendReply := AppendEntriesReply{}
 	for peer := range rf.peers {
 		if peer != rf.me {
 			// 是否需要判断ture false? 如果很多都是false怎么办，需要重新发送吗？好像不需要....
-			rf.sendAppendEntries(peer, &appendArgs, &appendReply)
+			go func(peerIndex int) {
+				rf.sendAppendEntries(peerIndex, &appendArgs, &appendReply)
+				if appendReply.Term > rf.currentTerm {
+					rf.state = 0
+				}
+			}(peer)
 		}
+	}
+
+	if rf.state == 2 {
+		DPrintf("*********%d is leader*********", rf.me)
 	}
 }
 
@@ -310,8 +258,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentLeader = args.LeaderId
 		rf.state = 0
 		reply.Success = true
-		DPrintf("                       [%d]'s leader is [%d]", rf.me, rf.currentLeader)
+		DPrintf("                       [%d,%d]'s leader is [%d]", rf.me, rf.state, rf.currentLeader)
 		return
+	} else {
+		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
 	}
 
 	reply.Success = false
@@ -366,7 +316,18 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) tickerAsFollower() {
-	// 判断是否超时，转换状态
+	for {
+		// 判断是否超时，转换状态
+		rf.currentLeader = -1
+		ms := 500 + (rand.Int63() % 400)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		DPrintf("%d is follower, leader : %d", rf.me, rf.currentLeader)
+
+		if rf.currentLeader == -1 {
+			rf.state = 1
+			return
+		}
+	}
 }
 
 func (rf *Raft) tickerAsCandidate() {
@@ -377,18 +338,99 @@ func (rf *Raft) tickerAsCandidate() {
 		ms := 200 + (rand.Int63() % 400)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-		if rf.state != 2 {
-			break
+		if rf.state != 1 {
+			return
 		}
-		DPrintf("------------------------- %d begin election :%d---------------------", rf.me, rf.currentTerm)
-		rf.beginElection() // 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection
+
+		DPrintf("------------------------- %d begin election :%d (status: %d)---------------------", rf.me, rf.currentTerm, rf.state)
+		rf.beginElection() // todo 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection吗？
 	}
 }
 
-func (rf *Raft) tickerAsLeader() {
+func (rf *Raft) beginElection() {
+
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+
+	//DPrintf("           raft [%d], term %d begin election", rf.me, rf.currentTerm)
+	args := RequestVoteArgs{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log) - 1,
+	}
+
+	// args.LastLogTerm todo 这里怎么设置呢
+	reply := RequestVoteReply{
+		VoteGranted: false,
+	}
+
+	// already get its own vote
+	posVoteChan := make(chan int)
+	negVoteChan := make(chan int)
+	//rf.mu.Lock()
+	for peerIndex := range rf.peers {
+		// do not need to send to candidate itself
+		if peerIndex == rf.me {
+			continue
+		}
+
+		go func(peerIndex int) {
+			if rf.sendRequestVote(peerIndex, &args, &reply) {
+				if reply.VoteGranted {
+					posVoteChan <- 1
+					negVoteChan <- 0
+				} else {
+					posVoteChan <- 0
+					negVoteChan <- 1
+				}
+				if reply.Term > rf.currentTerm {
+					rf.state = 0
+				}
+			} else {
+				posVoteChan <- 0
+				negVoteChan <- 0
+			}
+		}(peerIndex)
+	}
+
+	posVote := 1
+	negVote := 0
+	for peerIndex := range rf.peers {
+		if peerIndex == rf.me {
+			continue
+		}
+		posVote += <-posVoteChan
+		negVote += <-negVoteChan
+	}
+
+	// 冲突了
+	DPrintf("【%d】 vote result: %d : %d", rf.me, posVote, negVote)
+	if rf.state == 0 || posVote <= negVote {
+		return
+	}
+
+	// 收到leader的心跳
+	if rf.currentLeader != -1 {
+		rf.state = 0
+		return
+	}
+
+	rf.currentLeader = rf.me
+	rf.state = 2
 	rf.beginAppendEntries()
-	ms := 100 + (rand.Int63() % 100)
-	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+func (rf *Raft) tickerAsLeader() {
+	for {
+		if rf.state != 2 {
+			return
+		}
+
+		rf.currentLeader = rf.me
+		rf.beginAppendEntries()
+		ms := 100 + (rand.Int63() % 100)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
 }
 
 func (rf *Raft) mainLoop() {
