@@ -151,23 +151,23 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	// todo term会落后
-	DPrintf("           raft [%d], term %d send requestVote to id:[%d] term:%d", args.CandidateId, args.Term, rf.me, rf.currentTerm)
+	DPrintf("【%d, %d】 ************》[%d, %d]  requestVote", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm {
-		DPrintf("  raft [%d] term:%d [term] wrong", rf.me, rf.currentTerm)
+		DPrintf("  raft [%d, %d] wrong", rf.me, rf.currentTerm)
 		reply.VoteGranted = false
 		return
 	}
 
 	if rf.votedFor != -1 {
-		DPrintf("raft 【%d】 term:[%d](status: %d) deny for raft[%d] term [%d], already vote or leader for %d, leader %d", rf.me, rf.currentTerm, rf.state, args.CandidateId, args.Term, rf.votedFor, rf.currentLeader)
+		DPrintf("【%d, %d】<------x------ [%d, %d](status: %d) , already vote or leader for %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
 		reply.VoteGranted = false
 		return
 	}
 
 	if args.LastLogIndex >= len(rf.log)-1 {
-		DPrintf("raft 【%d】 term [%d] vote for raft【%d】term [%d], ", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+		DPrintf("【%d, %d】<------------ [%d, %d](status: %d) , ", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		return
@@ -256,9 +256,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.currentLeader = args.LeaderId
+		rf.votedFor = -1 // 新的term，清空投票结果
 		rf.state = 0
 		reply.Success = true
-		DPrintf("                       [%d,%d]'s leader is [%d]", rf.me, rf.state, rf.currentLeader)
+		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
 		return
 	} else {
 		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
@@ -321,7 +322,7 @@ func (rf *Raft) tickerAsFollower() {
 		rf.currentLeader = -1
 		ms := 500 + (rand.Int63() % 400)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		DPrintf("%d is follower, leader : %d", rf.me, rf.currentLeader)
+		DPrintf("[%d,%d] is follower, leader : %d", rf.me, rf.currentTerm, rf.currentLeader)
 
 		if rf.currentLeader == -1 {
 			rf.state = 1
@@ -364,9 +365,9 @@ func (rf *Raft) beginElection() {
 		VoteGranted: false,
 	}
 
-	// already get its own vote
-	posVoteChan := make(chan int)
-	negVoteChan := make(chan int)
+	posVote := 1
+	negVote := 0
+
 	//rf.mu.Lock()
 	for peerIndex := range rf.peers {
 		// do not need to send to candidate itself
@@ -375,32 +376,22 @@ func (rf *Raft) beginElection() {
 		}
 
 		go func(peerIndex int) {
-			if rf.sendRequestVote(peerIndex, &args, &reply) {
+			ok := rf.sendRequestVote(peerIndex, &args, &reply)
+			DPrintf("%d send %d [%v] ", rf.me, peerIndex, ok)
+			if ok {
+				rf.mu.Lock()
 				if reply.VoteGranted {
-					posVoteChan <- 1
-					negVoteChan <- 0
+					posVote += 1
 				} else {
-					posVoteChan <- 0
-					negVoteChan <- 1
+					negVote += 1
 				}
+				rf.mu.Unlock()
 				if reply.Term > rf.currentTerm {
 					rf.state = 0
 				}
-			} else {
-				posVoteChan <- 0
-				negVoteChan <- 0
 			}
 		}(peerIndex)
-	}
 
-	posVote := 1
-	negVote := 0
-	for peerIndex := range rf.peers {
-		if peerIndex == rf.me {
-			continue
-		}
-		posVote += <-posVoteChan
-		negVote += <-negVoteChan
 	}
 
 	// 冲突了

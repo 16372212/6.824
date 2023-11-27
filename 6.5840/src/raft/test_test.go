@@ -104,6 +104,7 @@ func TestManyElections2A(t *testing.T) {
 	cfg.begin("Test (2A): multiple elections")
 
 	cfg.checkOneLeader()
+	log.Println("=============checkOneLeader [pass]======")
 
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
@@ -114,11 +115,12 @@ func TestManyElections2A(t *testing.T) {
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
-
+		log.Printf("close %d, %d, %d \n", i1, i2, i3)
+		log.Printf("==========round %d===either the current leader should still be alive, or the remaining four should elect a new one.]\n", ii)
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
-
+		log.Printf("==========round %d==pass \n", ii)
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
