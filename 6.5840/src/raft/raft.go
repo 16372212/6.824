@@ -150,12 +150,10 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	// todo term会落后
 	DPrintf("【%d, %d】 ************》[%d, %d]  requestVote", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm {
-		DPrintf("  raft [%d, %d] wrong", rf.me, rf.currentTerm)
 		reply.VoteGranted = false
 		return
 	}
@@ -344,7 +342,7 @@ func (rf *Raft) tickerAsCandidate() {
 		}
 
 		DPrintf("------------------------- %d begin election :%d (status: %d)---------------------", rf.me, rf.currentTerm, rf.state)
-		rf.beginElection() // todo 如果超时还没获得，则重新开启新的term，所以这里必须开启线程调用beginElection吗？
+		rf.beginElection()
 	}
 }
 
@@ -368,7 +366,6 @@ func (rf *Raft) beginElection() {
 	posVote := 1
 	negVote := 0
 
-	//rf.mu.Lock()
 	for peerIndex := range rf.peers {
 		// do not need to send to candidate itself
 		if peerIndex == rf.me {
