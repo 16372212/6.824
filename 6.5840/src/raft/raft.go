@@ -153,11 +153,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("【%d, %d】 ************》[%d, %d]  requestVote", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && (rf.state == 1 || rf.state == 2)) {
 		reply.VoteGranted = false
 		return
 	}
 
+	rf.currentTerm = args.Term
+	rf.state = 0
+
+	// 如果已经投过票了
 	if rf.votedFor != -1 {
 		DPrintf("【%d, %d】<------x------ [%d, %d](status: %d) , already vote or leader for %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
 		reply.VoteGranted = false
@@ -227,10 +231,6 @@ func (rf *Raft) beginAppendEntries() {
 				}
 			}(peer)
 		}
-	}
-
-	if rf.state == 2 {
-		DPrintf("*********%d is leader*********", rf.me)
 	}
 }
 
@@ -351,7 +351,6 @@ func (rf *Raft) beginElection() {
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 
-	//DPrintf("           raft [%d], term %d begin election", rf.me, rf.currentTerm)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -365,6 +364,7 @@ func (rf *Raft) beginElection() {
 
 	posVote := 1
 	negVote := 0
+	done := false
 
 	for peerIndex := range rf.peers {
 		// do not need to send to candidate itself
@@ -374,38 +374,25 @@ func (rf *Raft) beginElection() {
 
 		go func(peerIndex int) {
 			ok := rf.sendRequestVote(peerIndex, &args, &reply)
-			DPrintf("%d send %d [%v] ", rf.me, peerIndex, ok)
 			if ok {
 				rf.mu.Lock()
+				defer rf.mu.Unlock()
 				if reply.VoteGranted {
 					posVote += 1
 				} else {
 					negVote += 1
 				}
-				rf.mu.Unlock()
-				if reply.Term > rf.currentTerm {
-					rf.state = 0
+
+				if !done && rf.state == 1 && posVote > len(rf.peers)/2 {
+					rf.currentLeader = rf.me
+					rf.state = 2
+					done = true
+					go rf.beginAppendEntries()
 				}
 			}
 		}(peerIndex)
-
 	}
 
-	// 冲突了
-	DPrintf("【%d】 vote result: %d : %d", rf.me, posVote, negVote)
-	if rf.state == 0 || posVote <= negVote {
-		return
-	}
-
-	// 收到leader的心跳
-	if rf.currentLeader != -1 {
-		rf.state = 0
-		return
-	}
-
-	rf.currentLeader = rf.me
-	rf.state = 2
-	rf.beginAppendEntries()
 }
 
 func (rf *Raft) tickerAsLeader() {
