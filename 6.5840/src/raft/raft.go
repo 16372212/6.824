@@ -27,26 +27,7 @@ import (
 	"6.5840/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log Entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
+const electionRpcTimout = 150
 
 type State int
 
@@ -56,7 +37,7 @@ const (
 	Leader
 )
 
-// A Go object implementing a single Raft peer.
+// Raft A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -66,15 +47,23 @@ type Raft struct {
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	// Persistent state a Raft server must maintain.
 	currentTerm   int
 	currentLeader int
 	votedFor      int
-	log           []byte
+	logs          []*LogEntry
 	state         State
+
+	// Volatile state on all servers
+	commitIndex int
+	lastApplied int
+
+	// Volatile state on leaders
+	nextIndex  []int // 用于跟踪需要发送给每个跟随者的下一个日志条目的索引。
+	matchIndex []int // 每个跟随者的日志中已经复制上去的最高的日志条目索引。
 }
 
-// return currentTerm and whether this server
+// GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
@@ -120,7 +109,7 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-// the service says it has created a snapshot that has
+// Snapshot the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
@@ -129,25 +118,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int // candidate's Term
-	CandidateId  int // candidate requesting vote
-	LastLogIndex int // index of candidate's last log entry (§5.4)
-	LastLogTerm  int
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
-}
-
-// example RequestVote RPC handler.
+// RequestVote example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	DPrintf("【%d, %d】 ************》[%d, %d]  requestVote", args.CandidateId, args.Term, rf.me, rf.currentTerm)
@@ -168,14 +139,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if args.LastLogIndex >= len(rf.log)-1 {
-		DPrintf("【%d, %d】<------------ [%d, %d](status: %d) , ", args.CandidateId, args.Term, rf.me, rf.currentTerm)
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
+	// 日志落后
+	if args.LastLogIndex < len(rf.logs)-1 {
+		DPrintf("【%d, %d】<------x------ [%d, %d](status: %d) , log is less than %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
+		reply.VoteGranted = false
 		return
 	}
 
-	reply.VoteGranted = false
+	DPrintf("【%d, %d】<------------ [%d, %d](status: %d) , ", args.CandidateId, args.Term, rf.me, rf.currentTerm)
+	reply.VoteGranted = true
+	rf.votedFor = args.CandidateId
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -234,37 +207,22 @@ func (rf *Raft) beginAppendEntries() {
 	}
 }
 
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []interface{}
-	LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	reply.Term = rf.currentTerm
 
-	if args.Term >= rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.currentLeader = args.LeaderId
-		rf.votedFor = -1 // 新的term，清空投票结果
-		rf.state = 0
-		reply.Success = true
-		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
-		return
-	} else {
+	if args.Term < rf.currentTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
 	}
 
-	reply.Success = false
-	return
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	rf.currentTerm = args.Term
+	rf.currentLeader = args.LeaderId
+	rf.votedFor = -1 // 新的term，清空投票结果
+	rf.state = 0
+	DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
 
 }
 
@@ -273,7 +231,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
+// Start the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
 // agreement and return immediately. there is no guarantee that this
@@ -295,7 +253,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-// the tester doesn't halt goroutines created by Raft after each test,
+// Kill the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
 // need for a lock.
@@ -348,7 +306,7 @@ func (rf *Raft) tickerAsCandidate() {
 
 func (rf *Raft) beginElection() {
 
-	timeout := 150
+	timeout := electionRpcTimout
 
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
@@ -356,7 +314,7 @@ func (rf *Raft) beginElection() {
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log) - 1,
+		LastLogIndex: len(rf.logs) - 1,
 	}
 
 	// args.LastLogTerm todo 这里怎么设置呢
@@ -435,7 +393,7 @@ func (rf *Raft) mainLoop() {
 	}
 }
 
-// the service or tester wants to create a Raft server. the ports
+// Make the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
 // have the same order. persister is a place for this server to
