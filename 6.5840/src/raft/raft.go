@@ -348,6 +348,8 @@ func (rf *Raft) tickerAsCandidate() {
 
 func (rf *Raft) beginElection() {
 
+	timeout := 150
+
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 
@@ -363,36 +365,45 @@ func (rf *Raft) beginElection() {
 	}
 
 	posVote := 1
-	negVote := 0
-	done := false
+	var wg sync.WaitGroup
 
 	for peerIndex := range rf.peers {
 		// do not need to send to candidate itself
 		if peerIndex == rf.me {
 			continue
 		}
-
+		wg.Add(1)
 		go func(peerIndex int) {
-			ok := rf.sendRequestVote(peerIndex, &args, &reply)
-			if ok {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-				if reply.VoteGranted {
-					posVote += 1
-				} else {
-					negVote += 1
-				}
+			ch := make(chan bool, 1)
 
-				if !done && rf.state == 1 && posVote > len(rf.peers)/2 {
-					rf.currentLeader = rf.me
-					rf.state = 2
-					done = true
-					go rf.beginAppendEntries()
+			// 嵌套机制方便实现超时判断
+			go func() {
+				ch <- rf.sendRequestVote(peerIndex, &args, &reply)
+			}()
+
+			select {
+			case ok := <-ch:
+				if ok && reply.VoteGranted {
+					rf.mu.Lock()
+					posVote += 1
+					rf.mu.Unlock()
 				}
+				wg.Done()
+			case <-time.After(time.Duration(timeout) * time.Millisecond):
+				wg.Done()
 			}
 		}(peerIndex)
 	}
 
+	wg.Wait()
+	DPrintf("vote result:%d", posVote)
+	if rf.state == 1 && posVote > len(rf.peers)/2 {
+		rf.currentLeader = rf.me
+		rf.state = 2
+		// done = true
+		go rf.beginAppendEntries()
+
+	}
 }
 
 func (rf *Raft) tickerAsLeader() {
