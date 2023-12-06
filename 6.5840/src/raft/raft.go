@@ -27,7 +27,10 @@ import (
 	"6.5840/labrpc"
 )
 
-const electionRpcTimout = 150
+const (
+	electionRpcTimout = 150
+	appendRpcTimeout  = 200
+)
 
 type State int
 
@@ -194,20 +197,34 @@ func (rf *Raft) beginAppendEntries() {
 	appendReply := AppendEntriesReply{}
 	for peer := range rf.peers {
 		if peer != rf.me {
-			// 是否需要判断ture false? 如果很多都是false怎么办，需要重新发送吗？好像不需要....
+			// todo 需要判断ture false
 			go func(peerIndex int) {
 
 				appendArgs.PrevLogIndex = rf.nextIndex[peer] - 1
 				appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
-				appendArgs.Entries = []*LogEntry{rf.logs[rf.nextIndex[peer]]}
+				appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
 
-				rf.sendAppendEntries(peerIndex, &appendArgs, &appendReply)
-				if appendReply.Term > rf.currentTerm {
-					rf.state = 0
+				ch := make(chan bool, 1)
+
+				// 嵌套机制方便实现超时判断
+				go func() {
+					ch <- rf.sendAppendEntries(peerIndex, &appendArgs, &appendReply)
+				}()
+
+				select {
+				case ok := <-ch:
+					if appendReply.Term > rf.currentTerm {
+						rf.state = 0
+					}
+				case <-time.After(time.Duration(appendRpcTimeout) * time.Millisecond):
+
 				}
+
 			}(peer)
 		}
 	}
+
+	// todo 如果有结果，根据结果的true false来更新自己的nextIndex以及matchIndex
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -218,6 +235,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+
+	// todo 根据其他情况判断，并更新自己的数据，返回结果之后，在决定是否commit
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
