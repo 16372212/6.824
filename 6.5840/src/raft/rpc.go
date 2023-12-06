@@ -24,7 +24,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int
 
 	PrevLogTerm int
-	Entries     []interface{}
+	Entries     []*LogEntry
 
 	LeaderCommit int
 }

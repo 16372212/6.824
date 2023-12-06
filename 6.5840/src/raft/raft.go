@@ -186,11 +186,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
 	appendArgs := AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-		// PrevLogIndex: rf.log,
-		// LeaderCommit
-		PrevLogTerm: rf.currentTerm - 1,
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex,
 	}
 
 	appendReply := AppendEntriesReply{}
@@ -198,6 +196,11 @@ func (rf *Raft) beginAppendEntries() {
 		if peer != rf.me {
 			// 是否需要判断ture false? 如果很多都是false怎么办，需要重新发送吗？好像不需要....
 			go func(peerIndex int) {
+
+				appendArgs.PrevLogIndex = rf.nextIndex[peer] - 1
+				appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
+				appendArgs.Entries = []*LogEntry{rf.logs[rf.nextIndex[peer]]}
+
 				rf.sendAppendEntries(peerIndex, &appendArgs, &appendReply)
 				if appendReply.Term > rf.currentTerm {
 					rf.state = 0
@@ -244,13 +247,15 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // Term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
-
-	return index, term, isLeader
+	index := len(rf.logs)
+	newEntry := LogEntry{
+		Term:    rf.currentTerm,
+		Command: command,
+	}
+	rf.logs = append(rf.logs, &newEntry)
+	// insert command into logs and broadcast
+	return index, rf.currentTerm, rf.currentLeader == rf.me
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
