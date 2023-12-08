@@ -195,9 +195,12 @@ func (rf *Raft) beginAppendEntries() {
 	}
 
 	appendReply := AppendEntriesReply{}
+
+	var wg sync.WaitGroup
 	for peer := range rf.peers {
 		if peer != rf.me {
 			// todo 需要判断ture false
+			wg.Add(1)
 			go func(peerIndex int) {
 
 				appendArgs.PrevLogIndex = rf.nextIndex[peer] - 1
@@ -213,11 +216,15 @@ func (rf *Raft) beginAppendEntries() {
 
 				select {
 				case ok := <-ch:
-					if appendReply.Term > rf.currentTerm {
-						rf.state = 0
+					if ok {
+						if appendReply.Term > rf.currentTerm {
+							rf.state = 0
+						}
+
+						wg.Done()
 					}
 				case <-time.After(time.Duration(appendRpcTimeout) * time.Millisecond):
-
+					wg.Done()
 				}
 
 			}(peer)
@@ -225,6 +232,7 @@ func (rf *Raft) beginAppendEntries() {
 	}
 
 	// todo 如果有结果，根据结果的true false来更新自己的nextIndex以及matchIndex
+
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
