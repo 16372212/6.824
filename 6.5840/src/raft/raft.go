@@ -18,12 +18,12 @@ package raft
 //
 
 import (
+	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -186,6 +186,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) initiateAsNewLeader() {
+	rf.nextIndex = make([]int, len(rf.peers)) // initialized to leader last log index + 1
+	for index := range rf.nextIndex {
+		rf.nextIndex[index] = len(rf.logs)
+	}
+	rf.matchIndex = make([]int, len(rf.peers)) //initialized to 0
+}
+
+// beginAppendEntries as a leader, send info
 func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
 	appendArgs := AppendEntriesArgs{
@@ -196,19 +205,19 @@ func (rf *Raft) beginAppendEntries() {
 
 	appendReply := AppendEntriesReply{}
 
+	result := 1
 	var wg sync.WaitGroup
+
 	for peer := range rf.peers {
 		if peer != rf.me {
-			// todo 需要判断ture false
-			wg.Add(1)
+			// todo 需要判断ture false, 通过matchIndex更新commitIndex
 			go func(peerIndex int) {
-
+				wg.Add(1)
 				appendArgs.PrevLogIndex = rf.nextIndex[peer] - 1
 				appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
 				appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
 
 				ch := make(chan bool, 1)
-
 				// 嵌套机制方便实现超时判断
 				go func() {
 					ch <- rf.sendAppendEntries(peerIndex, &appendArgs, &appendReply)
@@ -218,23 +227,33 @@ func (rf *Raft) beginAppendEntries() {
 				case ok := <-ch:
 					if ok {
 						if appendReply.Term > rf.currentTerm {
+							// 自己领导的角色就不保了
 							rf.state = 0
+							return
 						}
+						if appendReply.Success {
 
-						wg.Done()
+							rf.nextIndex[peer] = appendReply.MatchIndex + 1
+							rf.matchIndex[peer] = rf.nextIndex[peer] + 1
+						} else {
+							// 访问失败，只修改nextIndex
+							rf.nextIndex[peer] -= 1
+						}
 					}
+					wg.Done()
 				case <-time.After(time.Duration(appendRpcTimeout) * time.Millisecond):
 					wg.Done()
 				}
-
 			}(peer)
 		}
 	}
 
-	// todo 如果有结果，根据结果的true false来更新自己的nextIndex以及matchIndex
+	// get result
 
+	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 }
 
+// AppendEntries 收到了领导的来信
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	if args.Term < rf.currentTerm {
@@ -244,16 +263,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// todo 根据其他情况判断，并更新自己的数据，返回结果之后，在决定是否commit
-
 	reply.Term = rf.currentTerm
-	reply.Success = true
-	rf.currentTerm = args.Term
-	rf.currentLeader = args.LeaderId
-	rf.votedFor = -1 // 新的term，清空投票结果
-	rf.state = 0
-	DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
 
+	// heartbeat的行为
+	if len(args.Entries) == 0 {
+		reply.Success = true
+		rf.currentTerm = args.Term
+		rf.currentLeader = args.LeaderId
+		rf.votedFor = -1 // 新的term，清空投票结果
+		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
+		rf.state = 0
+		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
+		return
+	}
+
+	// 有日志数据，进入判断
+	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
+		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
+		reply.Success = false
+	} else {
+		reply.Success = true
+		rf.logs = append(rf.logs, args.Entries...)
+		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
+		// todo rf.lastApplied
+		reply.MatchIndex = len(rf.logs) - 1
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -275,14 +309,17 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
-	index := len(rf.logs)
+
+	if rf.currentLeader == rf.me {
+		return len(rf.logs), rf.currentTerm, false
+	}
+
 	newEntry := LogEntry{
 		Term:    rf.currentTerm,
 		Command: command,
 	}
 	rf.logs = append(rf.logs, &newEntry)
-	// insert command into logs and broadcast
-	return index, rf.currentTerm, rf.currentLeader == rf.me
+	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -338,8 +375,6 @@ func (rf *Raft) tickerAsCandidate() {
 
 func (rf *Raft) beginElection() {
 
-	timeout := electionRpcTimout
-
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 
@@ -379,7 +414,7 @@ func (rf *Raft) beginElection() {
 					rf.mu.Unlock()
 				}
 				wg.Done()
-			case <-time.After(time.Duration(timeout) * time.Millisecond):
+			case <-time.After(time.Duration(electionRpcTimout) * time.Millisecond):
 				wg.Done()
 			}
 		}(peerIndex)
@@ -391,6 +426,8 @@ func (rf *Raft) beginElection() {
 		rf.currentLeader = rf.me
 		rf.state = 2
 		// done = true
+		rf.initiateAsNewLeader()
+		// todo 这里为什么需要用go线程
 		go rf.beginAppendEntries()
 
 	}
