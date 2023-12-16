@@ -20,6 +20,7 @@ package raft
 import (
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -187,6 +188,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) initiateAsNewLeader() {
+	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers)) // initialized to leader last log index + 1
 	for index := range rf.nextIndex {
 		rf.nextIndex[index] = len(rf.logs)
@@ -205,17 +207,23 @@ func (rf *Raft) beginAppendEntries() {
 
 	appendReply := AppendEntriesReply{}
 
-	result := 1
 	var wg sync.WaitGroup
 
 	for peer := range rf.peers {
+
+		BPrintf("peer:[%d]: PrevLogIndex is %d, leader is %d", peer, rf.nextIndex[peer]-1, rf.me)
+		//BPrintf("peer:[%d]: len of log : %d", peer, len(rf.logs))
 		if peer != rf.me {
 			// todo 需要判断ture false, 通过matchIndex更新commitIndex
 			go func(peerIndex int) {
 				wg.Add(1)
-				appendArgs.PrevLogIndex = rf.nextIndex[peer] - 1
-				appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
-				appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
+				appendArgs.PrevLogIndex = rf.nextIndex[peerIndex] - 1
+				if appendArgs.PrevLogIndex >= 0 {
+					appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
+					appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
+				} else {
+					BPrintf("error!!! log should begin at 1")
+				}
 
 				ch := make(chan bool, 1)
 				// 嵌套机制方便实现超时判断
@@ -225,19 +233,21 @@ func (rf *Raft) beginAppendEntries() {
 
 				select {
 				case ok := <-ch:
+					BPrintf("  MatchIndex of %d is %d", peerIndex, appendReply.MatchIndex)
 					if ok {
 						if appendReply.Term > rf.currentTerm {
 							// 自己领导的角色就不保了
 							rf.state = 0
+							wg.Done()
 							return
 						}
 						if appendReply.Success {
 
-							rf.nextIndex[peer] = appendReply.MatchIndex + 1
-							rf.matchIndex[peer] = rf.nextIndex[peer] + 1
+							rf.nextIndex[peerIndex] = appendReply.MatchIndex + 1
+							rf.matchIndex[peerIndex] = appendReply.MatchIndex
 						} else {
 							// 访问失败，只修改nextIndex
-							rf.nextIndex[peer] -= 1
+							rf.nextIndex[peerIndex] -= 1
 						}
 					}
 					wg.Done()
@@ -248,9 +258,19 @@ func (rf *Raft) beginAppendEntries() {
 		}
 	}
 
-	// get result
+	// wait until get all result
+	wg.Wait()
 
-	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
+	// and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+	var matchIndexCopy = make([]int, len(rf.matchIndex))
+	copy(matchIndexCopy, rf.matchIndex)
+
+	sort.Ints(matchIndexCopy)
+	N := matchIndexCopy[len(matchIndexCopy)/2]
+	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
+		rf.commitIndex = N
+	}
 }
 
 // AppendEntries 收到了领导的来信
@@ -270,7 +290,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		rf.currentTerm = args.Term
 		rf.currentLeader = args.LeaderId
-		rf.votedFor = -1 // 新的term，清空投票结果
+		//rf.votedFor = -1 // 新的term，清空投票结果
+		reply.MatchIndex = len(rf.logs) - 1
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		rf.state = 0
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
@@ -282,12 +303,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
 		reply.Success = false
 	} else {
+		BPrintf("peer %d get %v log", rf.me, len(args.Entries))
 		reply.Success = true
-		rf.logs = append(rf.logs, args.Entries...)
+		// 应该从发送的第几个开始append
+		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		// todo rf.lastApplied
-		reply.MatchIndex = len(rf.logs) - 1
+		BPrintf("peer %d's log len  %v, commitIndex:%d", rf.me, len(rf.logs), rf.commitIndex)
 	}
+	reply.MatchIndex = len(rf.logs) - 1
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -310,7 +334,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 
-	if rf.currentLeader == rf.me {
+	if rf.currentLeader != rf.me {
 		return len(rf.logs), rf.currentTerm, false
 	}
 
@@ -319,6 +343,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.logs = append(rf.logs, &newEntry)
+
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
 
@@ -483,6 +508,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = 1
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	rf.logs = append(rf.logs, &LogEntry{Term: 0})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
