@@ -193,7 +193,6 @@ func (rf *Raft) initiateAsNewLeader() {
 	for index := range rf.nextIndex {
 		rf.nextIndex[index] = len(rf.logs)
 	}
-	rf.matchIndex = make([]int, len(rf.peers)) //initialized to 0
 }
 
 // beginAppendEntries as a leader, send info
@@ -269,7 +268,8 @@ func (rf *Raft) beginAppendEntries() {
 	sort.Ints(matchIndexCopy)
 	N := matchIndexCopy[len(matchIndexCopy)/2]
 	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
-		rf.commitIndex = N
+		BPrintf("!!!!!!!!!!!! n is :%d", N)
+		rf.commitIndex = N // todo
 	}
 }
 
@@ -295,23 +295,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		rf.state = 0
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
+
 		return
 	}
 
 	// 有日志数据，进入判断
 	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
+		reply.MatchIndex = len(rf.logs) - 1
 		reply.Success = false
 	} else {
-		BPrintf("peer %d get %v log", rf.me, len(args.Entries))
+		BPrintf("    peer %d get %v log", rf.me, len(args.Entries))
 		reply.Success = true
 		// 应该从发送的第几个开始append
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
+		reply.MatchIndex = len(rf.logs) - 1
 		// todo rf.lastApplied
-		BPrintf("peer %d's log len  %v, commitIndex:%d", rf.me, len(rf.logs), rf.commitIndex)
+		BPrintf("    peer %d's log len  %v, commitIndex:%d, reply:%+v", rf.me, len(rf.logs), rf.commitIndex, reply)
 	}
-	reply.MatchIndex = len(rf.logs) - 1
+
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
