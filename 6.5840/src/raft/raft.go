@@ -209,8 +209,6 @@ func (rf *Raft) beginAppendEntries() {
 	var wg sync.WaitGroup
 
 	for peer := range rf.peers {
-
-		BPrintf("peer:[%d]: PrevLogIndex is %d, leader is %d", peer, rf.nextIndex[peer]-1, rf.me)
 		//BPrintf("peer:[%d]: len of log : %d", peer, len(rf.logs))
 		if peer != rf.me {
 			// todo 需要判断ture false, 通过matchIndex更新commitIndex
@@ -232,8 +230,8 @@ func (rf *Raft) beginAppendEntries() {
 
 				select {
 				case ok := <-ch:
-					BPrintf("  MatchIndex of %d is %d", peerIndex, appendReply.MatchIndex)
 					if ok {
+						BPrintf("leader %d <- - - %t- - - -  peer [%d], MatchIndex:%d", rf.me, appendReply.Success, peerIndex, appendReply.MatchIndex)
 						if appendReply.Term > rf.currentTerm {
 							// 自己领导的角色就不保了
 							rf.state = 0
@@ -268,7 +266,6 @@ func (rf *Raft) beginAppendEntries() {
 	sort.Ints(matchIndexCopy)
 	N := matchIndexCopy[len(matchIndexCopy)/2]
 	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
-		BPrintf("!!!!!!!!!!!! n is :%d", N)
 		rf.commitIndex = N // todo
 	}
 }
@@ -295,9 +292,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		rf.state = 0
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
-
+		BPrintf("leader %d ----------------> peer:[%d]. heartbeat", args.LeaderId, rf.me)
 		return
 	}
+
+	BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries)
 
 	// 有日志数据，进入判断
 	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
@@ -305,14 +304,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.MatchIndex = len(rf.logs) - 1
 		reply.Success = false
 	} else {
-		BPrintf("    peer %d get %v log", rf.me, len(args.Entries))
 		reply.Success = true
 		// 应该从发送的第几个开始append
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		reply.MatchIndex = len(rf.logs) - 1
 		// todo rf.lastApplied
-		BPrintf("    peer %d's log len  %v, commitIndex:%d, reply:%+v", rf.me, len(rf.logs), rf.commitIndex, reply)
 	}
 
 }
@@ -336,7 +333,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
-
 	if rf.currentLeader != rf.me {
 		return len(rf.logs), rf.currentTerm, false
 	}
@@ -347,6 +343,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.logs = append(rf.logs, &newEntry)
 
+	if rf.currentLeader == rf.me {
+		BPrintf("!!== leader%d get new command== !!", rf.me)
+		rf.matchIndex[rf.me] += 1
+	}
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
 
@@ -490,6 +490,24 @@ func (rf *Raft) mainLoop() {
 	}
 }
 
+func (rf *Raft) applyLogs(applyCh chan ApplyMsg) {
+	for rf.killed() == false {
+
+		rf.mu.Lock()
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied++
+			applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.logs[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,
+			}
+		}
+
+		rf.mu.Unlock()
+		time.Sleep(time.Duration(appendRpcTimeout) * time.Millisecond)
+	}
+}
+
 // Make the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -519,5 +537,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.mainLoop()
 
+	go rf.applyLogs(applyCh)
 	return rf
 }

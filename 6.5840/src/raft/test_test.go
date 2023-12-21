@@ -200,6 +200,7 @@ func TestFollowerFailure2B(t *testing.T) {
 	// disconnect one follower from the network.
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect((leader1 + 1) % servers)
+	BPrintf("=============disconnect %d===============", (leader1+1)%servers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
