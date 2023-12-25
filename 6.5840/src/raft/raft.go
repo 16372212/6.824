@@ -239,12 +239,15 @@ func (rf *Raft) beginAppendEntries() {
 							return
 						}
 						if appendReply.Success {
-
+							rf.mu.Lock()
 							rf.nextIndex[peerIndex] = appendReply.MatchIndex + 1
 							rf.matchIndex[peerIndex] = appendReply.MatchIndex
+							rf.mu.Unlock()
 						} else {
+							rf.mu.Lock()
 							// 访问失败，只修改nextIndex
 							rf.nextIndex[peerIndex] -= 1
+							rf.mu.Unlock()
 						}
 					}
 					wg.Done()
@@ -260,14 +263,17 @@ func (rf *Raft) beginAppendEntries() {
 
 	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
 	// and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+	rf.mu.Lock()
 	var matchIndexCopy = make([]int, len(rf.matchIndex))
 	copy(matchIndexCopy, rf.matchIndex)
 
 	sort.Ints(matchIndexCopy)
+	BPrintf("for leader %d: matchIndexCopy change to %v", rf.me, rf.matchIndex)
 	N := matchIndexCopy[len(matchIndexCopy)/2]
 	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
 		rf.commitIndex = N // todo
 	}
+	rf.mu.Unlock()
 }
 
 // AppendEntries 收到了领导的来信
@@ -291,12 +297,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.MatchIndex = len(rf.logs) - 1
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		rf.state = 0
+
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
 		BPrintf("leader %d ----------------> peer:[%d]. heartbeat", args.LeaderId, rf.me)
 		return
 	}
-
-	BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries)
 
 	// 有日志数据，进入判断
 	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
@@ -309,6 +314,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
 		reply.MatchIndex = len(rf.logs) - 1
+		BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v, peer's MatchIndex:%d", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries, reply.MatchIndex)
 		// todo rf.lastApplied
 	}
 
@@ -344,8 +350,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, &newEntry)
 
 	if rf.currentLeader == rf.me {
-		BPrintf("!!== leader%d get new command== !!", rf.me)
-		rf.matchIndex[rf.me] += 1
+		rf.matchIndex[rf.me] = len(rf.logs) - 1
+		BPrintf("!!== leader %d get new command, matchIndex change to %d == !!", rf.me, rf.matchIndex[rf.me])
 	}
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
@@ -456,7 +462,7 @@ func (rf *Raft) beginElection() {
 		// done = true
 		rf.initiateAsNewLeader()
 		// todo 这里为什么需要用go线程
-		go rf.beginAppendEntries()
+		rf.beginAppendEntries()
 
 	}
 }

@@ -246,6 +246,7 @@ func TestLeaderFailure2B(t *testing.T) {
 	// disconnect the first leader.
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	log.Println("=============disconnect the first leader===============")
 
 	// the remaining followers should elect
 	// a new leader.
@@ -256,6 +257,7 @@ func TestLeaderFailure2B(t *testing.T) {
 	// disconnect the new leader.
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	log.Println("=============disconnect the new leader===============")
 
 	// submit a command to each server.
 	for i := 0; i < servers; i++ {
@@ -284,6 +286,8 @@ func TestFailAgree2B(t *testing.T) {
 
 	cfg.one(101, servers, false)
 
+	BPrintf("=============cfg.one passed===============")
+
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
@@ -296,6 +300,8 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
+	BPrintf("===========disconnect one follower passed=================")
+
 	// re-connect
 	cfg.connect((leader + 1) % servers)
 
@@ -303,8 +309,11 @@ func TestFailAgree2B(t *testing.T) {
 	// previous agreements, and be able to agree
 	// on new commands.
 	cfg.one(106, servers, true)
+	BPrintf("===========re-connect=================")
+
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
+	BPrintf("===========re-connect passed=================")
 
 	cfg.end()
 }
