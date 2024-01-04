@@ -6,8 +6,8 @@ import (
 )
 
 // Debugging
-const Debug = false
-const BDebug = true
+var Debug = false
+var BDebug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {

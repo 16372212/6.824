@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	electionRpcTimout = 150
-	appendRpcTimeout  = 200
+	electionRpcTimout = 250
+	appendRpcTimeout  = 150
 )
 
 type State int
@@ -136,21 +136,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.currentTerm = args.Term
 	rf.state = 0
 
-	// 如果已经投过票了
+	// 如果已经投过票了，就反对
 	if rf.votedFor != -1 {
-		DPrintf("【%d, %d】<------x------ [%d, %d](status: %d) , already vote or leader for %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
+		DPrintf("【%d, term %d】<------x------ [%d, %d](status: %d) , already vote or leader for %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
 		reply.VoteGranted = false
 		return
 	}
 
-	// 日志落后
+	// 日志落后，反对
 	if args.LastLogIndex < len(rf.logs)-1 {
-		DPrintf("【%d, %d】<------x------ [%d, %d](status: %d) , log is less than %d, leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, rf.votedFor, rf.currentLeader)
+		DPrintf("【%d, term %d】<------x------ [%d, %d](status: %d) , log is less with (%d-%d), leader %d", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.state, args.LastLogIndex, len(rf.logs)-1, rf.currentLeader)
 		reply.VoteGranted = false
 		return
 	}
 
-	DPrintf("【%d, %d】<------------ [%d, %d](status: %d) , ", args.CandidateId, args.Term, rf.me, rf.currentTerm)
+	DPrintf("【%d, term %d】<------------ [%d, %d](status: %d) , ", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
 }
@@ -217,6 +217,7 @@ func (rf *Raft) beginAppendEntries() {
 				appendArgs.PrevLogIndex = rf.nextIndex[peerIndex] - 1
 				if appendArgs.PrevLogIndex >= 0 {
 					appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
+					BPrintf("PrevLogIndex of peer %d is %d. Log of leader %d is %v", peerIndex, appendArgs.PrevLogIndex, rf.me, rf.logs)
 					appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
 				} else {
 					BPrintf("error!!! log should begin at 1")
@@ -231,7 +232,7 @@ func (rf *Raft) beginAppendEntries() {
 				select {
 				case ok := <-ch:
 					if ok {
-						BPrintf("leader %d <- - - %t- - - -  peer [%d], MatchIndex:%d", rf.me, appendReply.Success, peerIndex, appendReply.MatchIndex)
+						BPrintf("leader %d（term %d) <- - - %t- - - -  peer [%d], MatchIndex:%d", rf.me, rf.currentTerm, appendReply.Success, peerIndex, appendReply.MatchIndex)
 						if appendReply.Term > rf.currentTerm {
 							// 自己领导的角色就不保了
 							rf.state = 0
@@ -268,7 +269,7 @@ func (rf *Raft) beginAppendEntries() {
 	copy(matchIndexCopy, rf.matchIndex)
 
 	sort.Ints(matchIndexCopy)
-	BPrintf("for leader %d: matchIndexCopy change to %v", rf.me, rf.matchIndex)
+	BPrintf("for leader %d: matchIndex change to %v", rf.me, rf.matchIndex)
 	N := matchIndexCopy[len(matchIndexCopy)/2]
 	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
 		rf.commitIndex = N // todo
@@ -281,6 +282,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term < rf.currentTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
+		BPrintf("leader %d --------x-------> peer:[%d](currentTerm:%d). args:%+v", args.LeaderId, rf.me, rf.currentTerm, args)
+		BPrintf("peer[%d] last log term: %d", rf.me, rf.logs[len(rf.logs)-1].Term)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -295,7 +298,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentLeader = args.LeaderId
 		//rf.votedFor = -1 // 新的term，清空投票结果
 		reply.MatchIndex = len(rf.logs) - 1
-		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
+		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
 		rf.state = 0
 
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
@@ -304,6 +307,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 有日志数据，进入判断
+	//BPrintf("leader %d send to %d, args:%+v", args.LeaderId, rf.me, args)
 	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
 		reply.MatchIndex = len(rf.logs) - 1
@@ -312,9 +316,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		// 应该从发送的第几个开始append
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
-		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs))))
+		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
 		reply.MatchIndex = len(rf.logs) - 1
-		BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v, peer's MatchIndex:%d", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries, reply.MatchIndex)
+		BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v, peer's MatchIndex:%d, args:%+v", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries, reply.MatchIndex, args)
 		// todo rf.lastApplied
 	}
 
@@ -351,7 +355,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if rf.currentLeader == rf.me {
 		rf.matchIndex[rf.me] = len(rf.logs) - 1
-		BPrintf("!!== leader %d get new command, matchIndex change to %d == !!", rf.me, rf.matchIndex[rf.me])
+		rf.nextIndex[rf.me] = len(rf.logs)
+		BPrintf("!!== leader %d get new command, matchIndex change to %d, matchIndex: %v, nextIndex: %v == !!", rf.me, rf.matchIndex[rf.me], rf.matchIndex, rf.nextIndex)
 	}
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
