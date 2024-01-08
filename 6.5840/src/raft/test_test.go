@@ -309,11 +309,11 @@ func TestFailAgree2B(t *testing.T) {
 	// previous agreements, and be able to agree
 	// on new commands.
 	cfg.one(106, servers, true)
-	BPrintf("===========re-connect=================")
+	BPrintf("===========re-connect passed=================")
 
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
-	BPrintf("========re-connect passed=============")
+	BPrintf("========re-connect passed after RaftElectionTimeout=============")
 
 	cfg.end()
 }

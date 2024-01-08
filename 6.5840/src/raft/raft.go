@@ -29,8 +29,10 @@ import (
 )
 
 const (
-	electionRpcTimout = 250
-	appendRpcTimeout  = 150
+	rpcTimout       = 150 // rpc的失效时间
+	appendRpcFreq   = 150 // leader多久发送一次心跳信息
+	electionRpcFreq = 300 // election or candidate多久发送一次消息
+	applyFreq       = 200 // 状态机多久更新一次
 )
 
 type State int
@@ -187,14 +189,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-func (rf *Raft) initiateAsNewLeader() {
-	rf.matchIndex = make([]int, len(rf.peers))
-	rf.nextIndex = make([]int, len(rf.peers)) // initialized to leader last log index + 1
-	for index := range rf.nextIndex {
-		rf.nextIndex[index] = len(rf.logs)
-	}
-}
-
 // beginAppendEntries as a leader, send info
 func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
@@ -217,8 +211,8 @@ func (rf *Raft) beginAppendEntries() {
 				appendArgs.PrevLogIndex = rf.nextIndex[peerIndex] - 1
 				if appendArgs.PrevLogIndex >= 0 {
 					appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
-					BPrintf("PrevLogIndex of peer %d is %d. Log of leader %d is %v", peerIndex, appendArgs.PrevLogIndex, rf.me, rf.logs)
 					appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
+					BPrintf("PrevLogIndex of peer %d is %d. Log is %v (rf.logs[%d+1:])", peerIndex, appendArgs.PrevLogIndex, appendArgs.Entries, appendArgs.PrevLogIndex+1)
 				} else {
 					BPrintf("error!!! log should begin at 1")
 				}
@@ -234,25 +228,18 @@ func (rf *Raft) beginAppendEntries() {
 					if ok {
 						BPrintf("leader %d（term %d) <- - - %t- - - -  peer [%d], MatchIndex:%d", rf.me, rf.currentTerm, appendReply.Success, peerIndex, appendReply.MatchIndex)
 						if appendReply.Term > rf.currentTerm {
-							// 自己领导的角色就不保了
+							// todo 自己领导的角色就不保了
 							rf.state = 0
 							wg.Done()
 							return
 						}
-						if appendReply.Success {
-							rf.mu.Lock()
-							rf.nextIndex[peerIndex] = appendReply.MatchIndex + 1
-							rf.matchIndex[peerIndex] = appendReply.MatchIndex
-							rf.mu.Unlock()
-						} else {
-							rf.mu.Lock()
-							// 访问失败，只修改nextIndex
-							rf.nextIndex[peerIndex] -= 1
-							rf.mu.Unlock()
-						}
+						rf.mu.Lock()
+						rf.nextIndex[peerIndex] = appendReply.MatchIndex + 1
+						rf.matchIndex[peerIndex] = appendReply.MatchIndex
+						rf.mu.Unlock()
 					}
 					wg.Done()
-				case <-time.After(time.Duration(appendRpcTimeout) * time.Millisecond):
+				case <-time.After(time.Duration(rpcTimout) * time.Millisecond):
 					wg.Done()
 				}
 			}(peer)
@@ -269,7 +256,7 @@ func (rf *Raft) beginAppendEntries() {
 	copy(matchIndexCopy, rf.matchIndex)
 
 	sort.Ints(matchIndexCopy)
-	BPrintf("for leader %d: matchIndex change to %v", rf.me, rf.matchIndex)
+	BPrintf("for leader %d: matchIndex change to %v, nextIndex change to %v", rf.me, rf.matchIndex, rf.nextIndex)
 	N := matchIndexCopy[len(matchIndexCopy)/2]
 	if N > rf.commitIndex && rf.logs[N].Term == rf.currentTerm {
 		rf.commitIndex = N // todo
@@ -280,16 +267,16 @@ func (rf *Raft) beginAppendEntries() {
 // AppendEntries 收到了领导的来信
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
+	reply.Term = rf.currentTerm
+	reply.MatchIndex = len(rf.logs) - 1
+
 	if args.Term < rf.currentTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
-		BPrintf("leader %d --------x-------> peer:[%d](currentTerm:%d). args:%+v", args.LeaderId, rf.me, rf.currentTerm, args)
-		BPrintf("peer[%d] last log term: %d", rf.me, rf.logs[len(rf.logs)-1].Term)
-		reply.Term = rf.currentTerm
+		//BPrintf("peer[%d] last log term: %d", rf.me, rf.logs[len(rf.logs)-1].Term)
 		reply.Success = false
+		BPrintf("leader %d --------x-------> peer:[%d](currentTerm:%d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
 		return
 	}
-
-	reply.Term = rf.currentTerm
 
 	// heartbeat的行为
 	if len(args.Entries) == 0 {
@@ -297,12 +284,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.currentLeader = args.LeaderId
 		//rf.votedFor = -1 // 新的term，清空投票结果
-		reply.MatchIndex = len(rf.logs) - 1
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
 		rf.state = 0
-
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
-		BPrintf("leader %d ----------------> peer:[%d]. heartbeat", args.LeaderId, rf.me)
+		BPrintf("leader %d ----------------> peer:[%d](term: %d). heartbeat", args.LeaderId, rf.me, rf.currentTerm)
 		return
 	}
 
@@ -310,15 +295,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//BPrintf("leader %d send to %d, args:%+v", args.LeaderId, rf.me, args)
 	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
 		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
-		reply.MatchIndex = len(rf.logs) - 1
 		reply.Success = false
 	} else {
 		reply.Success = true
+		BPrintf("leader %d ----------------> peer:[%d](term: %d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
 		// 应该从发送的第几个开始append
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
-		reply.MatchIndex = len(rf.logs) - 1
-		BPrintf("leader %d ----------------> peer:[%d]. index:%d, entry:%v, peer's MatchIndex:%d, args:%+v", args.LeaderId, rf.me, args.PrevLogIndex+1, args.Entries, reply.MatchIndex, args)
 		// todo rf.lastApplied
 	}
 
@@ -354,8 +337,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, &newEntry)
 
 	if rf.currentLeader == rf.me {
+		rf.mu.Lock()
 		rf.matchIndex[rf.me] = len(rf.logs) - 1
 		rf.nextIndex[rf.me] = len(rf.logs)
+		rf.mu.Unlock()
 		BPrintf("!!== leader %d get new command, matchIndex change to %d, matchIndex: %v, nextIndex: %v == !!", rf.me, rf.matchIndex[rf.me], rf.matchIndex, rf.nextIndex)
 	}
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
@@ -384,7 +369,7 @@ func (rf *Raft) tickerAsFollower() {
 	for {
 		// 判断是否超时，转换状态
 		rf.currentLeader = -1
-		ms := 500 + (rand.Int63() % 400)
+		ms := electionRpcFreq + (rand.Int63() % 200)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		DPrintf("[%d,%d] is follower, leader : %d", rf.me, rf.currentTerm, rf.currentLeader)
 
@@ -400,7 +385,7 @@ func (rf *Raft) tickerAsCandidate() {
 		rf.votedFor = -1
 		rf.currentLeader = -1
 		//DPrintf("-------------------------%d time out, term:%d---------------------", rf.me, rf.currentTerm)
-		ms := 200 + (rand.Int63() % 400)
+		ms := electionRpcFreq + (rand.Int63() % 200)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		if rf.state != 1 {
@@ -453,7 +438,7 @@ func (rf *Raft) beginElection() {
 					rf.mu.Unlock()
 				}
 				wg.Done()
-			case <-time.After(time.Duration(electionRpcTimout) * time.Millisecond):
+			case <-time.After(time.Duration(rpcTimout) * time.Millisecond):
 				wg.Done()
 			}
 		}(peerIndex)
@@ -465,7 +450,6 @@ func (rf *Raft) beginElection() {
 		rf.currentLeader = rf.me
 		rf.state = 2
 		// done = true
-		rf.initiateAsNewLeader()
 		// todo 这里为什么需要用go线程
 		rf.beginAppendEntries()
 
@@ -479,8 +463,9 @@ func (rf *Raft) tickerAsLeader() {
 		}
 
 		rf.currentLeader = rf.me
+		DPrintf("------------------------- leader %d begin send info, term:%d (status: %d)---------------------", rf.me, rf.currentTerm, rf.state)
 		rf.beginAppendEntries()
-		ms := 100 + (rand.Int63() % 100)
+		ms := appendRpcFreq + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -515,7 +500,7 @@ func (rf *Raft) applyLogs(applyCh chan ApplyMsg) {
 		}
 
 		rf.mu.Unlock()
-		time.Sleep(time.Duration(appendRpcTimeout) * time.Millisecond)
+		time.Sleep(time.Duration(applyFreq) * time.Millisecond)
 	}
 }
 
@@ -541,6 +526,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.logs = append(rf.logs, &LogEntry{Term: 0})
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.nextIndex = make([]int, len(rf.peers)) // todo 默认为1
+
+	for peer := range rf.peers {
+		rf.nextIndex[peer] = 1
+	}
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
