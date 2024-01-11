@@ -212,8 +212,10 @@ func (rf *Raft) beginAppendEntries() {
 				wg.Add(1)
 				appendArgs.PrevLogIndex = rf.nextIndex[peerIndex] - 1
 				if appendArgs.PrevLogIndex >= 0 {
+					rf.mu.Lock()
 					appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
 					appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
+					rf.mu.Unlock()
 					BPrintf("PrevLogIndex of peer %d is %d. Log is %v (rf.logs[%d+1:])", peerIndex, appendArgs.PrevLogIndex, appendArgs.Entries, appendArgs.PrevLogIndex+1)
 				} else {
 					BPrintf("error!!! log should begin at 1")
@@ -305,8 +307,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = 0
 		BPrintf("leader %d ----------------> peer:[%d](term: %d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
 		// 应该从发送的第几个开始append
+		rf.mu.Lock()
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
+		rf.mu.Unlock()
 		// todo rf.lastApplied
 	}
 
@@ -339,15 +343,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    rf.currentTerm,
 		Command: command,
 	}
+	rf.mu.Lock()
 	rf.logs = append(rf.logs, &newEntry)
 
 	if rf.currentLeader == rf.me {
-		rf.mu.Lock()
 		rf.matchIndex[rf.me] = len(rf.logs) - 1
 		rf.nextIndex[rf.me] = len(rf.logs)
-		rf.mu.Unlock()
 		BPrintf("!!== leader %d get new command, matchIndex change to %d, matchIndex: %v, nextIndex: %v == !!", rf.me, rf.matchIndex[rf.me], rf.matchIndex, rf.nextIndex)
 	}
+	rf.mu.Unlock()
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me
 }
 
@@ -463,9 +467,11 @@ func (rf *Raft) beginElection() {
 
 func (rf *Raft) tickerAsLeader() {
 	// 当重新变成leader的时候，初始化自己的nextIndex
+	rf.mu.Lock()
 	for peer := range rf.peers {
 		rf.nextIndex[peer] = len(rf.logs)
 	}
+	rf.mu.Unlock()
 
 	for {
 		if rf.state != 2 {
