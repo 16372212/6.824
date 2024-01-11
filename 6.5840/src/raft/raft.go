@@ -192,17 +192,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // beginAppendEntries as a leader, send info
 func (rf *Raft) beginAppendEntries() {
 	// broadcast to all other endClients
-	appendArgs := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		LeaderCommit: rf.commitIndex,
-	}
-
-	appendReply := AppendEntriesReply{}
 
 	var wg sync.WaitGroup
 
 	for peer := range rf.peers {
+
+		appendArgs := AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			LeaderCommit: rf.commitIndex,
+		}
+
+		appendReply := AppendEntriesReply{}
+
 		//BPrintf("peer:[%d]: len of log : %d", peer, len(rf.logs))
 		if peer != rf.me {
 			// todo 需要判断ture false, 通过matchIndex更新commitIndex
@@ -270,8 +272,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.MatchIndex = len(rf.logs) - 1
 
+	// todo leader的日志的长度必须大于follower
 	if args.Term < rf.currentTerm {
-		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, rf.currentLeader)
+		DPrintf("                       [%d,%d] deny leader of [%d]", rf.me, rf.state, args.LeaderId)
 		//BPrintf("peer[%d] last log term: %d", rf.me, rf.logs[len(rf.logs)-1].Term)
 		reply.Success = false
 		BPrintf("leader %d --------x-------> peer:[%d](currentTerm:%d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
@@ -287,17 +290,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
 		rf.state = 0
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
-		BPrintf("leader %d ----------------> peer:[%d](term: %d). heartbeat", args.LeaderId, rf.me, rf.currentTerm)
+		//BPrintf("leader %d ----------------> peer:[%d](term: %d). heartbeat", args.LeaderId, rf.me, rf.currentTerm)
 		return
 	}
 
 	// 有日志数据，进入判断
 	//BPrintf("leader %d send to %d, args:%+v", args.LeaderId, rf.me, args)
-	if args.PrevLogTerm >= len(rf.logs) || rf.logs[args.PrevLogTerm].Term != args.PrevLogTerm {
-		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term", rf.me, rf.state, rf.currentLeader)
+	if args.PrevLogIndex >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		BPrintf("leader %d --------x-------> peer:[%d](term: %d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
+		DPrintf("                       [%d,%d] deny leader of [%d] because of Prev log and term, rf.logs:%+v", rf.me, rf.state, rf.currentLeader, rf.logs)
 		reply.Success = false
 	} else {
 		reply.Success = true
+		rf.state = 0
 		BPrintf("leader %d ----------------> peer:[%d](term: %d). args:%+v, reply:%+v", args.LeaderId, rf.me, rf.currentTerm, args, reply)
 		// 应该从发送的第几个开始append
 		rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
@@ -457,6 +462,11 @@ func (rf *Raft) beginElection() {
 }
 
 func (rf *Raft) tickerAsLeader() {
+	// 当重新变成leader的时候，初始化自己的nextIndex
+	for peer := range rf.peers {
+		rf.nextIndex[peer] = len(rf.logs)
+	}
+
 	for {
 		if rf.state != 2 {
 			return
