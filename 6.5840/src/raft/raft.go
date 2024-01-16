@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"log"
 	"math"
 	"math/rand"
 	"sort"
@@ -212,11 +213,11 @@ func (rf *Raft) beginAppendEntries() {
 				wg.Add(1)
 				appendArgs.PrevLogIndex = rf.nextIndex[peerIndex] - 1
 				if appendArgs.PrevLogIndex >= 0 {
-					rf.mu.Lock()
+					//rf.mu.Lock()
 					appendArgs.PrevLogTerm = rf.logs[appendArgs.PrevLogIndex].Term
 					appendArgs.Entries = rf.logs[appendArgs.PrevLogIndex+1:]
-					rf.mu.Unlock()
-					BPrintf("PrevLogIndex of peer %d is %d. Log is %v (rf.logs[%d+1:])", peerIndex, appendArgs.PrevLogIndex, appendArgs.Entries, appendArgs.PrevLogIndex+1)
+					//rf.mu.Unlock()
+					//BPrintf("for leader %d: PrevLogIndex of peer %d is %d. Log is %v (rf.logs[%d+1:])", appendArgs.LeaderId, peerIndex, appendArgs.PrevLogIndex, appendArgs.Entries, appendArgs.PrevLogIndex+1)
 				} else {
 					BPrintf("error!!! log should begin at 1")
 				}
@@ -292,7 +293,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.logs)-1)))
 		rf.state = 0
 		DPrintf("                        *[%d, %d]*  ----leader---> [%d,%d]", rf.currentLeader, args.Term, rf.me, rf.currentTerm)
-		//BPrintf("leader %d ----------------> peer:[%d](term: %d). heartbeat", args.LeaderId, rf.me, rf.currentTerm)
+		//BPrintf("leader %d ----------------> pcteer:[%d](term: %d). heartbeat", args.LeaderId, rf.me, rf.currentTerm)
 		return
 	}
 
@@ -314,6 +315,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// todo rf.lastApplied
 	}
 
+	rf.printLog()
+}
+
+func (rf *Raft) printLog() {
+	//print out
+	pref := "                       "
+	switch rf.me {
+	case 1:
+		pref = pref + pref
+	case 2:
+		pref = pref + pref + pref
+	}
+
+	//rf.mu.Lock()
+	log.Printf("%speer:[%d]", pref, rf.me)
+	for i := 0; i < len(rf.logs); i++ {
+		log.Printf("%s[%d]", pref, rf.logs[i].Command)
+	}
+	log.Printf("\n")
+	//rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -350,6 +371,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = len(rf.logs) - 1
 		rf.nextIndex[rf.me] = len(rf.logs)
 		BPrintf("!!== leader %d get new command, matchIndex change to %d, matchIndex: %v, nextIndex: %v == !!", rf.me, rf.matchIndex[rf.me], rf.matchIndex, rf.nextIndex)
+		rf.printLog()
 	}
 	rf.mu.Unlock()
 	return len(rf.logs) - 1, rf.currentTerm, rf.currentLeader == rf.me

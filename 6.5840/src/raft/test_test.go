@@ -189,6 +189,7 @@ func TestRPCBytes2B(t *testing.T) {
 
 // test just failure of followers.
 func TestFollowerFailure2B(t *testing.T) {
+
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -479,32 +480,39 @@ func TestRejoin2B(t *testing.T) {
 	cfg.begin("Test (2B): rejoin of partitioned leader")
 
 	cfg.one(101, servers, true)
+	BPrintf("===========cfg.one passed=================")
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	BPrintf("===========disconnect leader %d=================", leader1)
 
 	// make old leader try to agree on some Entries
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
 
+	BPrintf("===========Start 3 commits=================")
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
+	BPrintf("===========Start 3 commits passed=================")
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
 
+	BPrintf("===========disconnect second leader %d and connect old leader %d=================", leader2, leader1)
 	// old leader connected again
 	cfg.connect(leader1)
 
 	cfg.one(104, 2, true)
+	BPrintf("===========old leader %d passed=================", leader1)
 
 	// all together now
 	cfg.connect(leader2)
 
 	cfg.one(105, servers, true)
+	BPrintf("===========leader1 passed=================")
 
 	cfg.end()
 }
