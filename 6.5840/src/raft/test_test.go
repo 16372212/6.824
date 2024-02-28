@@ -353,6 +353,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	// repair
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
+
 	cfg.connect((leader + 3) % servers)
 
 	// the disconnected majority may have chosen a leader from
